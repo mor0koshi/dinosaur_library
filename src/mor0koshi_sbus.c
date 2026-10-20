@@ -12,6 +12,7 @@
 
 #define SBUS_FRAME_LEN 25
 #define SBUS_HEADER 0x0FU
+#define SBUS_END_MASK 0x0FU /* SBUS2 の末尾は 0x04 / 0x14 / 0x24 / 0x34 (下位 4bit が 4) */
 #define SBUS_FLAG_FAILSAFE 0x08U /* 受信機が送信機を見失った (フレーム落ち 0x04 は判定に使わない) */
 
 /* HAL のコールバックは huart しかくれないので、どの sbus_t かをここで探す */
@@ -59,6 +60,10 @@ lib_status_t sbus_init(sbus_t *s, UART_HandleTypeDef *huart) {
     }
     if (huart->hdmarx == NULL) {
         return port_fail(LIB_ERR_IRQ_OFF, "sbus_init"); /* CubeMX で RX の DMA が設定されていない */
+    }
+    if (huart->hdmarx->Init.Mode == DMA_CIRCULAR) {
+        /* Circular だと受信をかけ直せず、Size も増え続ける位置になり、古いフレームを読み続ける。Normal にする */
+        return port_fail(LIB_ERR_IRQ_OFF, "sbus_init");
     }
     uint32_t pm = port_irq_save();
     memset(s, 0, sizeof *s);
@@ -116,7 +121,12 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
     }
 #endif
     for (int i = 0; i + SBUS_FRAME_LEN <= (int)Size && i + SBUS_FRAME_LEN <= SBUS_RXBUF_LEN; i++) {
-        if (s->rxbuf[i] == SBUS_HEADER) {
+        /*
+         * データの途中の 0x0F をヘッダーと間違えないように、末尾のバイトも確かめる。
+         * 末尾は 0x00 (SBUS) か 下位 4bit が 4 (SBUS2)。合わなければ次の 0x0F を探す。
+         */
+        uint8_t end = s->rxbuf[i + SBUS_FRAME_LEN - 1];
+        if (s->rxbuf[i] == SBUS_HEADER && (end == 0x00U || (end & SBUS_END_MASK) == 0x04U)) {
             decode(s, &s->rxbuf[i]);
             break;
         }

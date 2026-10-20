@@ -48,6 +48,63 @@ static void test_init_starts_dma(void) {
     CHECK_EQ(fake.primask, 0);
 }
 
+/* Circular だと受信のかけ直しができず、古いフレームを読み続けるので、init で断る */
+static void test_init_rejects_circular_dma(void) {
+    hdma.Init.Mode = DMA_CIRCULAR;
+    CHECK_EQ(sbus_init(&sbus, &huart5), LIB_ERR_IRQ_OFF);
+    CHECK_EQ(fake.last_error, LIB_ERR_IRQ_OFF);
+    CHECK_EQ(fake.uart_rx_start_calls, 0);
+    hdma.Init.Mode = DMA_NORMAL;
+}
+
+/* データの途中の 0x0F はヘッダーではない: 末尾のバイトが合わないので読み飛ばし、本物のフレームを読む */
+static void test_stray_header_byte_is_skipped(void) {
+    uint16_t ch[16];
+    all_channels(ch, 1024);
+    ch[5] = 1234;
+    sbus_init(&sbus, &huart5);
+    memset(sbus.rxbuf, 0xAA, SBUS_RXBUF_LEN);
+    sbus.rxbuf[2] = 0x0F;  /* データの途中の 0x0F */
+    sbus.rxbuf[26] = 0x77; /* 2 + 24: 末尾として正しくない */
+    uint8_t f[25];
+    pack_frame(ch, 0, f);
+    memcpy(&sbus.rxbuf[30], f, 25);
+    HAL_UARTEx_RxEventCallback(&huart5, 64);
+    sbus_update(&sbus);
+    CHECK_EQ(sbus_frame_count(&sbus), 1);
+    CHECK_EQ(sbus_raw(&sbus, 5), 1234);
+    CHECK(sbus_ok(&sbus));
+}
+
+static void test_only_stray_header_is_not_a_frame(void) {
+    sbus_init(&sbus, &huart5);
+    memset(sbus.rxbuf, 0xAA, SBUS_RXBUF_LEN);
+    sbus.rxbuf[2] = 0x0F;
+    HAL_UARTEx_RxEventCallback(&huart5, 64);
+    sbus_update(&sbus);
+    CHECK_EQ(sbus_frame_count(&sbus), 0);
+    CHECK(!sbus_ok(&sbus));
+    CHECK_EQ(fake.uart_rx_start_calls, 2); /* 受信はかけ直す */
+}
+
+/* SBUS2 の末尾は 0x04 / 0x14 / 0x24 / 0x34 */
+static void test_sbus2_end_bytes_are_accepted(void) {
+    uint16_t ch[16];
+    all_channels(ch, 1024);
+    ch[0] = 1700;
+    sbus_init(&sbus, &huart5);
+    const uint8_t ends[] = {0x00, 0x04, 0x14, 0x24, 0x34};
+    for (unsigned k = 0; k < sizeof ends; k++) {
+        uint32_t before = sbus_frame_count(&sbus);
+        receive_frame(ch, 0, 0);
+        sbus.rxbuf[24] = ends[k];
+        HAL_UARTEx_RxEventCallback(&huart5, 25);
+        CHECK_EQ(sbus_frame_count(&sbus), before + 2); /* receive_frame の分と、末尾を書き換えた分 */
+    }
+    sbus_update(&sbus);
+    CHECK_EQ(sbus_raw(&sbus, 0), 1700);
+}
+
 static void test_init_without_dma_fails(void) {
     static UART_HandleTypeDef no_dma = {.hdmarx = NULL};
     static sbus_t other;
@@ -289,6 +346,10 @@ static void test_restart_failure_is_reported(void) {
 
 int main(void) {
     RUN(test_init_starts_dma);
+    RUN(test_init_rejects_circular_dma);
+    RUN(test_stray_header_byte_is_skipped);
+    RUN(test_only_stray_header_is_not_a_frame);
+    RUN(test_sbus2_end_bytes_are_accepted);
     RUN(test_init_without_dma_fails);
     RUN(test_init_reports_hal_error);
     RUN(test_decode_hand_made_frame);

@@ -72,7 +72,7 @@ can_subscribe(&can1, 0x456, on_rx, NULL);
 
 ### SBUS
 
-CubeMX: UART を **100000bps・9bit (Even パリティ)・ストップビット 2** にし、**RX の DMA (Normal)** と
+CubeMX: UART を **100000bps・9bit (Even パリティ)・ストップビット 2** にし、**RX の DMA (Normal。Circular は不可)** と
 **UART の割り込み**をオンにします。F7 は Advanced Features の **RX Pin Active Level Inversion** もオンにします。
 F4 の UART には反転の機能がないので、基板にインバーターが要ります。
 

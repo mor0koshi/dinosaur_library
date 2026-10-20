@@ -126,8 +126,13 @@ void HAL_CAN_TxMailbox2AbortCallback(CAN_HandleTypeDef *hcan);
 
 /* ---- DMA / UART ---- */
 typedef struct {
+    struct {
+        uint32_t Mode; /* DMA_NORMAL か DMA_CIRCULAR */
+    } Init;
     int ht_disabled; /* __HAL_DMA_DISABLE_IT(h, DMA_IT_HT) が呼ばれたら 1 */
 } DMA_HandleTypeDef;
+#define DMA_NORMAL 0x00000000U
+#define DMA_CIRCULAR 0x00000100U
 #define DMA_IT_HT 0x00000008U
 #define __HAL_DMA_DISABLE_IT(__HANDLE__, __INTERRUPT__) ((void)(__INTERRUPT__), (__HANDLE__)->ht_disabled = 1)
 
