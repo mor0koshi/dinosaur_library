@@ -6,5 +6,6 @@
 #include "mor0koshi_sbus.h"
 #include "mor0koshi_encoder.h"
 #include "mor0koshi_encoder_can.h"
+#include "mor0koshi_robomas.h"
 
 #endif
