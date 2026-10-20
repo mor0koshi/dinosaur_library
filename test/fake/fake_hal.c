@@ -24,7 +24,7 @@ void fake_reset(void) {
 
 /* テストではライブラリの weak な lib_error_hook をこれで上書きして、呼ばれたことを数える */
 void lib_error_hook(lib_status_t err, const char *where) {
-    (void)where;
+    fake.last_where = where;
     fake.error_count++;
     fake.last_error = err;
 }

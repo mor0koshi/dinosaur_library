@@ -11,10 +11,18 @@
 
 /* ---- 詰める・取り出す (CAN が無効なプロジェクトでも使える) ---- */
 
-void can_put_u8(uint8_t *d, int offset, uint8_t v) { d[offset] = v; }
-void can_put_i8(uint8_t *d, int offset, int8_t v) { d[offset] = (uint8_t)v; }
+/* d が NULL のとき put は何もせず get は 0 を返す (NULL を渡されても HardFault させない) */
+void can_put_u8(uint8_t *d, int offset, uint8_t v) {
+    if (d != NULL) {
+        d[offset] = v;
+    }
+}
+void can_put_i8(uint8_t *d, int offset, int8_t v) { can_put_u8(d, offset, (uint8_t)v); }
 
 void can_put_u16(uint8_t *d, int offset, uint16_t v) {
+    if (d == NULL) {
+        return;
+    }
     d[offset] = (uint8_t)v;
     d[offset + 1] = (uint8_t)(v >> 8);
 }
@@ -22,6 +30,9 @@ void can_put_u16(uint8_t *d, int offset, uint16_t v) {
 void can_put_i16(uint8_t *d, int offset, int16_t v) { can_put_u16(d, offset, (uint16_t)v); }
 
 void can_put_u32(uint8_t *d, int offset, uint32_t v) {
+    if (d == NULL) {
+        return;
+    }
     for (int i = 0; i < 4; i++) {
         d[offset + i] = (uint8_t)(v >> (8 * i));
     }
@@ -35,16 +46,22 @@ void can_put_float(uint8_t *d, int offset, float v) {
     can_put_u32(d, offset, u);
 }
 
-uint8_t can_get_u8(const uint8_t *d, int offset) { return d[offset]; }
-int8_t can_get_i8(const uint8_t *d, int offset) { return (int8_t)d[offset]; }
+uint8_t can_get_u8(const uint8_t *d, int offset) { return d == NULL ? 0U : d[offset]; }
+int8_t can_get_i8(const uint8_t *d, int offset) { return (int8_t)can_get_u8(d, offset); }
 
 uint16_t can_get_u16(const uint8_t *d, int offset) {
+    if (d == NULL) {
+        return 0U;
+    }
     return (uint16_t)(d[offset] | (d[offset + 1] << 8));
 }
 
 int16_t can_get_i16(const uint8_t *d, int offset) { return (int16_t)can_get_u16(d, offset); }
 
 uint32_t can_get_u32(const uint8_t *d, int offset) {
+    if (d == NULL) {
+        return 0U;
+    }
     uint32_t v = 0;
     for (int i = 0; i < 4; i++) {
         v |= (uint32_t)d[offset + i] << (8 * i);
@@ -73,6 +90,16 @@ static can_t *find_bus(const CAN_HandleTypeDef *hcan) {
         }
     }
     return NULL;
+}
+
+/* hcan を別の can_t がすでに持っているか。割り込みを止めて呼ぶこと */
+static bool owned_by_other(const can_t *bus, const CAN_HandleTypeDef *hcan) {
+    for (int i = 0; i < CAN_MAX_BUSES; i++) {
+        if (buses[i] != NULL && buses[i] != bus && buses[i]->hcan == hcan) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /* 同じ bus か同じ hcan が登録済みならそこを上書きし、無ければ空きに入れる。割り込みを止めて呼ぶこと */
@@ -130,6 +157,11 @@ lib_status_t can_init(can_t *bus, CAN_HandleTypeDef *hcan) {
     }
 
     uint32_t pm = port_irq_save();
+    if (owned_by_other(bus, hcan)) {
+        /* 別の can_t で同じ CAN を初期化すると、先の can_t の登録 (listen・subscribe) が消えてしまう。memset の前に断る */
+        port_irq_restore(pm);
+        return port_fail(LIB_ERR_PARAM, "can_init");
+    }
     memset(bus, 0, sizeof *bus);
     bus->hcan = hcan;
     bool registered = register_bus(bus);
@@ -157,6 +189,8 @@ lib_status_t can_init(can_t *bus, CAN_HandleTypeDef *hcan) {
 
     /* バスオフ (ケーブル抜けなど) から自動で復帰させる。HAL_CAN_Start の前 (初期化モードの間) に立てる */
     hcan->Instance->MCR |= CAN_MCR_ABOM;
+    /* 自動再送をオンにする。オフだと送信に失敗したとき完了の割り込みが来ず、送信の列が止まる */
+    hcan->Instance->MCR &= ~CAN_MCR_NART;
 
     if (HAL_CAN_Start(hcan) != HAL_OK) {
         return port_fail(LIB_ERR_HAL, "can_init");
@@ -171,12 +205,12 @@ lib_status_t can_init(can_t *bus, CAN_HandleTypeDef *hcan) {
 
 lib_status_t can_subscribe_range(can_t *bus, uint32_t first, uint32_t last, can_rx_fn fn, void *arg) {
     if (bus == NULL || fn == NULL || first > last || last > 0x7FFU) {
-        return port_fail(LIB_ERR_PARAM, "can_subscribe");
+        return port_fail(LIB_ERR_PARAM, "can_subscribe_range");
     }
     uint32_t pm = port_irq_save();
     if (bus->nsubs >= CAN_MAX_SUBS) {
         port_irq_restore(pm);
-        return port_fail(LIB_ERR_FULL, "can_subscribe");
+        return port_fail(LIB_ERR_FULL, "can_subscribe_range");
     }
     can_sub_t *s = &bus->subs[bus->nsubs];
     s->first = (uint16_t)first;
@@ -206,7 +240,7 @@ static void box_on_rx(uint32_t id, const uint8_t *data, uint8_t len, void *arg) 
 }
 
 lib_status_t can_listen(can_t *bus, uint32_t id, can_box_t *box) {
-    if (box == NULL) {
+    if (bus == NULL || box == NULL) { /* bus の確認は can_subscribe_range に任せると、報告の名前が変わってしまう */
         return port_fail(LIB_ERR_PARAM, "can_listen");
     }
     memset(box, 0, sizeof *box);

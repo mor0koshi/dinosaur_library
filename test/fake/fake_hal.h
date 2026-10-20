@@ -45,6 +45,7 @@ typedef struct {
     /* lib_error_hook */
     int error_count;
     lib_status_t last_error;
+    const char *last_where; /* 最後に lib_error_hook に渡された where */
 } fake_t;
 
 extern fake_t fake;

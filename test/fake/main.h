@@ -59,6 +59,7 @@ extern CAN_TypeDef fake_can1, fake_can2, fake_can3;
 #define CAN2 (&fake_can2)
 #define CAN3 (&fake_can3)
 #define CAN_MCR_ABOM (1UL << 6)
+#define CAN_MCR_NART (1UL << 4)
 
 typedef struct {
     CAN_TypeDef *Instance;

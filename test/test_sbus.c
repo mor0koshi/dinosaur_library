@@ -105,6 +105,24 @@ static void test_sbus2_end_bytes_are_accepted(void) {
     CHECK_EQ(sbus_raw(&sbus, 0), 1700);
 }
 
+/* 1 つの UART は 1 つの sbus_t だけが持つ。別の sbus_t で同じ huart を初期化すると、先の登録が消えてしまう */
+static void test_init_refuses_second_sbus_for_same_huart(void) {
+    static sbus_t second;
+    CHECK_EQ(sbus_init(&sbus, &huart5), LIB_OK);
+    CHECK_EQ(sbus_init(&second, &huart5), LIB_ERR_PARAM);
+    CHECK_EQ(fake.last_error, LIB_ERR_PARAM);
+    CHECK_EQ(fake.uart_rx_start_calls, 1); /* 2 回目は受信を始めない */
+    /* 先に登録した sbus は壊れていない */
+    uint16_t ch[16];
+    all_channels(ch, 1000);
+    receive_frame(ch, 0, 0);
+    sbus_update(&sbus);
+    CHECK_EQ(sbus_raw(&sbus, 0), 1000);
+    CHECK_EQ(sbus_frame_count(&second), 0);
+    /* 同じ sbus_t をもう一度初期化するのはよい */
+    CHECK_EQ(sbus_init(&sbus, &huart5), LIB_OK);
+}
+
 static void test_init_without_dma_fails(void) {
     static UART_HandleTypeDef no_dma = {.hdmarx = NULL};
     static sbus_t other;
@@ -350,6 +368,7 @@ int main(void) {
     RUN(test_stray_header_byte_is_skipped);
     RUN(test_only_stray_header_is_not_a_frame);
     RUN(test_sbus2_end_bytes_are_accepted);
+    RUN(test_init_refuses_second_sbus_for_same_huart);
     RUN(test_init_without_dma_fails);
     RUN(test_init_reports_hal_error);
     RUN(test_decode_hand_made_frame);

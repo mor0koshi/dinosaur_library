@@ -34,6 +34,16 @@ static void test_counts_and_delta(void) {
     CHECK_EQ(encoder_count(&enc), 50);
 }
 
+/* カウントが int32 の端を越えても、符号付きの桁あふれ (未定義動作) にならずに回り込む */
+static void test_count_wraps_without_overflow(void) {
+    tim16.CNT = 100;
+    encoder_init(&enc, &htim16, 2048);
+    enc.count = INT32_MAX;
+    tim16.CNT = 101;
+    encoder_update(&enc);
+    CHECK_EQ(encoder_count(&enc), INT32_MIN);
+}
+
 static void test_16bit_wrap(void) {
     tim16.CNT = 65530;
     encoder_init(&enc, &htim16, 2048);
@@ -132,6 +142,7 @@ static void test_null_is_safe(void) {
 int main(void) {
     RUN(test_init);
     RUN(test_counts_and_delta);
+    RUN(test_count_wraps_without_overflow);
     RUN(test_16bit_wrap);
     RUN(test_32bit_wrap);
     RUN(test_reverse);

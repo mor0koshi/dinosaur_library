@@ -27,6 +27,16 @@ static sbus_t *find_port(const UART_HandleTypeDef *huart) {
     return NULL;
 }
 
+/* huart を別の sbus_t がすでに持っているか。割り込みを止めて呼ぶこと */
+static bool owned_by_other(const sbus_t *s, const UART_HandleTypeDef *huart) {
+    for (int i = 0; i < SBUS_MAX_PORTS; i++) {
+        if (ports[i] != NULL && ports[i] != s && ports[i]->huart == huart) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* 同じ s か同じ huart が登録済みならそこを上書きし、無ければ空きに入れる。割り込みを止めて呼ぶこと */
 static bool register_port(sbus_t *s) {
     int slot = -1;
@@ -66,6 +76,11 @@ lib_status_t sbus_init(sbus_t *s, UART_HandleTypeDef *huart) {
         return port_fail(LIB_ERR_IRQ_OFF, "sbus_init");
     }
     uint32_t pm = port_irq_save();
+    if (owned_by_other(s, huart)) {
+        /* 別の sbus_t で同じ UART を初期化すると、先の sbus_t の登録が消えてしまう。memset の前に断る */
+        port_irq_restore(pm);
+        return port_fail(LIB_ERR_PARAM, "sbus_init");
+    }
     memset(s, 0, sizeof *s);
     s->huart = huart;
     s->stick_min = 368;
@@ -77,6 +92,12 @@ lib_status_t sbus_init(sbus_t *s, UART_HandleTypeDef *huart) {
     if (!registered) {
         return port_fail(LIB_ERR_FULL, "sbus_init");
     }
+#if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)
+    /* memset で汚れたキャッシュの行が、あとで DMA の書いた値を上書きしないように、受信の前に書き戻して捨てる */
+    if ((SCB->CCR & SCB_CCR_DC_Msk) != 0U) {
+        SCB_CleanInvalidateDCache_by_Addr((uint32_t *)(void *)s->rxbuf, SBUS_RXBUF_LEN);
+    }
+#endif
     if (start_rx(s) != HAL_OK) {
         return port_fail(LIB_ERR_HAL, "sbus_init");
     }

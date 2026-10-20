@@ -56,7 +56,8 @@ void encoder_update(encoder_t *e) {
         diff = -diff;
     }
     e->delta = (int32_t)diff;
-    e->count += e->delta;
+    /* 符号なしで足してから戻す (int32 の端を越えても未定義動作にならず、回り込む) */
+    e->count = (int32_t)((uint32_t)e->count + (uint32_t)e->delta);
 
     uint32_t dc = cycles - e->last_cycles; /* サイクルカウンタが一周しても、引き算なら正しい間隔になる */
     if (now_ms - e->last_ms >= ENCODER_RPM_RESET_MS) {

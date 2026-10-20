@@ -1,3 +1,5 @@
+#include <string.h>
+
 #include "mor0koshi_can.h"
 #include "test.h"
 
@@ -239,6 +241,57 @@ static void test_init_fails_when_all_buses_used(void) {
     CHECK_EQ(fake.last_error, LIB_ERR_FULL);
 }
 
+/* 自動再送をオンにする: NART が立っていると、送信に失敗したとき完了の割り込みが来ず、列が止まる */
+static void test_init_clears_nart(void) {
+    fake_can1.MCR = CAN_MCR_NART;
+    CHECK_EQ(can_init(&can1, &hcan1), LIB_OK);
+    CHECK((fake.can_mcr_at_start & CAN_MCR_NART) == 0);
+    CHECK(fake.can_mcr_at_start & CAN_MCR_ABOM);
+}
+
+/* 1 つの CAN は 1 つの can_t だけが持つ。別の can_t で同じ hcan を初期化すると、先に登録した分が消えてしまう */
+static void test_init_refuses_second_can_t_for_same_hcan(void) {
+    CHECK_EQ(can_init(&can1, &hcan1), LIB_OK);
+    CHECK_EQ(can_listen(&can1, 0x10, &box), LIB_OK);
+    int errors = fake.error_count;
+    CHECK_EQ(can_init(&can2, &hcan1), LIB_ERR_PARAM);
+    CHECK_EQ(fake.last_error, LIB_ERR_PARAM);
+    CHECK_EQ(fake.error_count, errors + 1);
+    CHECK_EQ(fake.can_start_calls, 1); /* 2 回目はハードに触らない */
+    /* 先に登録した can1 は壊れていない */
+    uint8_t d[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    fake_can_receive(&hcan1, 0x10, d, 8);
+    CHECK(can_read(&box, d));
+    /* 同じ can_t をもう一度初期化するのはよい */
+    CHECK_EQ(can_init(&can1, &hcan1), LIB_OK);
+}
+
+static void test_error_hook_names(void) {
+    can_init(&can1, &hcan1);
+    CHECK_EQ(can_subscribe_range(&can1, 5, 1, NULL, NULL), LIB_ERR_PARAM);
+    CHECK(strcmp(fake.last_where, "can_subscribe_range") == 0);
+    CHECK_EQ(can_listen(NULL, 0x10, &box), LIB_ERR_PARAM);
+    CHECK(strcmp(fake.last_where, "can_listen") == 0);
+}
+
+/* NULL を渡されても HardFault しない: put は何もせず、get は 0 */
+static void test_byte_helpers_accept_null(void) {
+    can_put_u8(NULL, 0, 1);
+    can_put_i8(NULL, 0, 1);
+    can_put_u16(NULL, 0, 1);
+    can_put_i16(NULL, 0, 1);
+    can_put_u32(NULL, 0, 1);
+    can_put_i32(NULL, 0, 1);
+    can_put_float(NULL, 0, 1.0f);
+    CHECK_EQ(can_get_u8(NULL, 0), 0);
+    CHECK_EQ(can_get_i8(NULL, 0), 0);
+    CHECK_EQ(can_get_u16(NULL, 0), 0);
+    CHECK_EQ(can_get_i16(NULL, 0), 0);
+    CHECK_EQ(can_get_u32(NULL, 0), 0);
+    CHECK_EQ(can_get_i32(NULL, 0), 0);
+    CHECK_NEAR(can_get_float(NULL, 0), 0.0, 1e-9);
+}
+
 int main(void) {
     RUN(test_put_get_roundtrip);
     RUN(test_init_configures_hardware);
@@ -256,5 +309,9 @@ int main(void) {
     RUN(test_null_args_do_nothing);
     RUN(test_abort_callback_pumps_queue);
     RUN(test_init_fails_when_all_buses_used);
+    RUN(test_init_clears_nart);
+    RUN(test_init_refuses_second_can_t_for_same_hcan);
+    RUN(test_error_hook_names);
+    RUN(test_byte_helpers_accept_null);
     return TEST_RESULT();
 }
