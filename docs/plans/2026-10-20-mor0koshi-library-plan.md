@@ -3955,7 +3955,9 @@ Expected: 最後に `OK: 2026_B_767 (compile) ...`。`NG:` が出たら、表示
 
 ```bash
 cd "/home/fukui-ros/STM32 project/mor0koshi_library"
-test/arm_build_check.sh "../2026_B_446" link test/linkcheck_f446.c
+test/arm_build_check.sh "../2026_B_446" link test/linkcheck_f446.c \
+    HAL_CAN_RxFifo0MsgPendingCallback HAL_CAN_TxMailbox0CompleteCallback \
+    HAL_UARTEx_RxEventCallback HAL_UART_ErrorCallback
 ```
 
 Expected: 4 つのコールバックがすべて `T .../mor0koshi_library/src/mor0koshi_can.c:NN` または `.../mor0koshi_sbus.c:NN` と表示され、最後に `OK: 2026_B_446 (link) ...`。`W` (weak) や HAL のファイル名が出たら、静的ライブラリの強い定義が HAL の weak を上書きできていないので、`CMakeLists.txt` のリンクのしかたを見直す。
@@ -3964,7 +3966,8 @@ Expected: 4 つのコールバックがすべて `T .../mor0koshi_library/src/mo
 
 ```bash
 cd "/home/fukui-ros/STM32 project/mor0koshi_library"
-test/arm_build_check.sh "../mortor_test" link test/linkcheck_nocan.c
+test/arm_build_check.sh "../mortor_test" link test/linkcheck_nocan.c \
+    HAL_UARTEx_RxEventCallback HAL_UART_ErrorCallback
 ```
 
 Expected: CAN の 2 つは `(無し)`、UART の 2 つは `T .../mor0koshi_sbus.c:NN`、最後に `OK: mortor_test (link) ...`。
@@ -4288,9 +4291,15 @@ cmake -S test -B build-test -G Ninja && cmake --build build-test && ctest --test
 
 ```bash
 test/arm_build_check.sh ../2026_B_767 compile
-test/arm_build_check.sh ../2026_B_446 link test/linkcheck_f446.c
-test/arm_build_check.sh ../mortor_test link test/linkcheck_nocan.c
+test/arm_build_check.sh ../2026_B_446 link test/linkcheck_f446.c \
+    HAL_CAN_RxFifo0MsgPendingCallback HAL_CAN_TxMailbox0CompleteCallback \
+    HAL_UARTEx_RxEventCallback HAL_UART_ErrorCallback
+test/arm_build_check.sh ../mortor_test link test/linkcheck_nocan.c \
+    HAL_UARTEx_RxEventCallback HAL_UART_ErrorCallback
 ```
+
+`link` の最後に並べるのは、ライブラリのものになっているべき HAL のコールバックです。
+それが無い (HAL の空の関数のまま) か、並べていないのにライブラリのものが入っていると NG になります。
 
 設計の詳しいことは `docs/specs/2026-10-20-mor0koshi-library-design.md` にあります。
 ````
