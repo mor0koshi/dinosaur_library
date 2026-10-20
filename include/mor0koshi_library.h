@@ -1,0 +1,6 @@
+#ifndef MOR0KOSHI_LIBRARY_H
+#define MOR0KOSHI_LIBRARY_H
+/* これ 1 つを include すれば、ライブラリの全部の部品が使える */
+#include "mor0koshi_common.h"
+
+#endif
