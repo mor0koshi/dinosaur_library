@@ -132,7 +132,7 @@ typedef enum {
     LIB_ERR_PARAM,    // 引数がおかしい (ID が範囲外、同じ ID を二重に登録、NULL など)
     LIB_ERR_FULL,     // 登録の表、または送信待ちの列がいっぱい
     LIB_ERR_HAL,      // HAL の関数が失敗した
-    LIB_ERR_IRQ_OFF,  // CubeMX で必要な割り込みがオフ
+    LIB_ERR_IRQ_OFF,  // CubeMX で必要な割り込みや DMA がオフ
 } lib_status_t;
 
 void lib_error_hook(lib_status_t err, const char *where);  // weak。中身は空
@@ -140,7 +140,7 @@ void lib_error_hook(lib_status_t err, const char *where);  // weak。中身は�
 
 - `init`・`listen`・`subscribe`・`send`・`add` は `lib_status_t` を返す (`robomas_add` だけはモーターへのポインタを返し、失敗すると NULL)
 - 失敗したときは必ず `lib_error_hook` も呼ぶ。使う側が書けば `printf` などで原因が分かる。`where` は関数名
-- NULL を渡された関数は何もしない (値を返す関数は 0 を返す)。HardFault にはならない
+- NULL を渡された関数は何もしない (値を返す関数は 0 を返す。ただし `*_age_ms` は UINT32_MAX = 一度も届いていない扱い)。HardFault にはならない
 - 診断用の数: `can_dropped_count(&can)` (送信で捨てた数)、`sbus_frame_count(&sbus)` (受信フレーム数)、`sbus_error_count(&sbus)` (UART エラーの数)
 
 ## 1. CAN (`mor0koshi_can`)
@@ -167,6 +167,7 @@ can_listen(&can1, 0x456, &box);
 if (can_read(&box, d)) {        // 前回の can_read から新しく届いていれば true。d に 8 バイト写す
     int16_t v = can_get_i16(d, 0);
 }
+can_peek(&box, d);               // 新しいかどうかに関係なく最新の値を写す。一度も届いていなければ false
 uint32_t age = can_age_ms(&box);  // 最後に届いてからの ms。一度も届いていなければ UINT32_MAX
 
 // 受け取る (上級版: 届いた瞬間に関数を呼ぶ。割り込みの中で動くので短く書く)
@@ -250,6 +251,7 @@ sbus_set_deadband(&sbus, 26);                  // 中立から ±26 以内は 0
 - D キャッシュが有効なとき (`SCB->CCR` の DC ビット) は、読む前にバッファのキャッシュを無効化する。そのためバッファは 32 バイト境界に揃え、大きさは 64 バイト
 - `sbus_update` は割り込みを止めてから 16ch・フラグ・受信時刻をまとめて写す
 - `sbus_t` は 2 つまで登録できる
+- RX の DMA が設定されていない (`huart->hdmarx == NULL`) ときは `sbus_init` が `LIB_ERR_IRQ_OFF` を返す
 
 ## 3. エンコーダー (`mor0koshi_encoder`)
 
@@ -334,7 +336,7 @@ robomas_set_angle(arm, 90.0f);      // 位置制御: 出力軸の角度 [度]。
 robomas_set_current(wheel, 2000);   // 電流を直接 (M3508: ±16384 / M2006: ±10000 で頭打ち)
 
 // 1ms ごとに 1 回
-robomas_update(&rm);                // 全モーターの制御を計算して 0x200 / 0x1FF を送る
+robomas_update(&rm);                // 全モーターの制御を計算して 0x200 / 0x1FF を送る。can_send の結果を返す
 
 // 読む
 float rpm = robomas_rpm(wheel);     // 出力軸 rpm
@@ -350,7 +352,7 @@ robomas_set_speed_gain(m, kp, ki, i_limit); // 速度 PI
 robomas_set_angle_gain(m, kp, max_rpm);     // 位置 P と、そのときの上限 rpm (出力軸)
 
 // 非常時
-robomas_stop_all(&rm);              // 全モーターを電流指令 0 にし、積分をリセットする
+robomas_stop_all(&rm);              // 全モーターを電流指令 0 にし、積分をリセットする (送るのは次の robomas_update)
 ```
 
 ### CAN の形式 (C620 / C610 共通)
@@ -396,7 +398,7 @@ robomas_stop_all(&rm);              // 全モーターを電流指令 0 にし�
 
 - フィードバックが 100ms 届いていないモーターは `robomas_ok` が false になり、`update` で出力を 0 にして積分をリセットする (センサーなしで積分がたまり続け、復帰した瞬間に暴れるのを防ぐ)
 - `robomas_stop_all` は SBUS が NG のときに呼ぶ想定で、例のコードにもそう書く
-- `update` は 0x200 を毎回送り、0x1FF は ID 5〜8 のモーターが 1 つ以上あるときだけ送る
+- `update` は、ID 1〜4 のモーターが 1 つ以上あれば 0x200 を、ID 5〜8 のモーターが 1 つ以上あれば 0x1FF を送る (使っていない範囲のフレームは送らない)
 
 ### CAN の通信量 (README に書く)
 
@@ -416,15 +418,15 @@ robomas_stop_all(&rm);              // 全モーターを電流指令 0 にし�
 | CAN | ID ごとの振り分け (箱・関数・範囲・重なり)、知らない ID は捨てる、4 フレーム以上送ると列に入り完了割り込みで順に出る、あふれたら `LIB_ERR_FULL` と捨てた数、`put` / `get` の往復、CAN2 のフィルタ番号 14、割り込みがオフなら `LIB_ERR_IRQ_OFF` |
 | エンコーダー | 16bit・32bit の桁あふれ (両方向)、逆向き、rpm (偽の DWT で時間を進める)、10 秒以上空いたら rpm 0、リセット |
 | エンコーダー CAN | 送ったフレームの中身、受けた値の取り出し (負の値も)、未受信の age |
-| ロボマス | フィードバックの解釈 (ビッグエンディアン)、何回転してもの角度 (両方向・一周またぎ・最初は 0 度)、出力軸への換算、0x200 / 0x1FF の中身 (ID 5〜8 がいなければ 0x1FF は送らない)、電流の頭打ち、積分の頭打ち、途絶 → 出力 0 と積分リセット、`stop_all`、モード切替で積分リセット、同じ ID の二重登録は NULL |
+| ロボマス | フィードバックの解釈 (ビッグエンディアン)、何回転してもの角度 (両方向・一周またぎ・最初は 0 度)、出力軸への換算、0x200 / 0x1FF の中身 (使っていない範囲のフレームは送らない)、電流の頭打ち、積分の頭打ち、途絶 → 出力 0 と積分リセット、`stop_all`、モード切替で積分リセット、同じ ID の二重登録は NULL |
 
 ### ARM でのビルド確認
 
 本物の CubeMX プロジェクトのコンパイル設定で、ライブラリと例 3 つが**警告なし** (`-Wall -Wextra`) でビルドできることを確かめる。プロジェクトはスクラッチ領域にコピーして使い、元のリポジトリには触らない。
 
-1. F767 (2026_B_767 の設定)
-2. F446 (AIcontest の設定)
-3. CAN を使っていない F767 のプロジェクト (CAN の部分が外れること)
+1. F767 (2026_B_767 の設定)。コンパイルだけ (767 は HAL の CAN・UART コールバックを自分で書いているので、リンクすると衝突する)
+2. F446 (2026_B_446 の設定)。リンクまで行い、HAL のコールバックがライブラリのものになっていることを `arm-none-eabi-nm` で確かめる。AIcontest も HAL のコールバックを自分で書いているので使わない
+3. CAN を使っていない F767 (mortor_test の設定)。リンクまで行い、CAN の部分が外れること
 
 例はライブラリには入れず、ビルド確認のときだけ一緒にコンパイルする。各例は `example_xxx_init()` と `example_xxx_loop()` の 2 つの関数として書く。
 
