@@ -1,5 +1,5 @@
-#ifndef MOR0KOSHI_COMMON_H
-#define MOR0KOSHI_COMMON_H
+#ifndef DINOSAUR_COMMON_H
+#define DINOSAUR_COMMON_H
 
 #ifdef __cplusplus
 extern "C" {

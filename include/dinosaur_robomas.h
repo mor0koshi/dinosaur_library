@@ -1,5 +1,5 @@
-#ifndef MOR0KOSHI_ROBOMAS_H
-#define MOR0KOSHI_ROBOMAS_H
+#ifndef DINOSAUR_ROBOMAS_H
+#define DINOSAUR_ROBOMAS_H
 /*
  * ロボマスモーター M3508 (C620) / M2006 (C610) の速度制御・位置制御。
  *
@@ -21,7 +21,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "mor0koshi_can.h"
+#include "dinosaur_can.h"
 
 #if defined(HAL_CAN_MODULE_ENABLED)
 

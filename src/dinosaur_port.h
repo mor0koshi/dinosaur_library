@@ -1,5 +1,5 @@
-#ifndef MOR0KOSHI_PORT_H
-#define MOR0KOSHI_PORT_H
+#ifndef DINOSAUR_PORT_H
+#define DINOSAUR_PORT_H
 /*
  * ライブラリの中だけで使う、HAL・CMSIS への入口。
  * テストでは main.h の代わりに test/fake/main.h が入る。
@@ -7,7 +7,7 @@
 #include <stdint.h>
 
 #include "main.h"
-#include "mor0koshi_common.h"
+#include "dinosaur_common.h"
 
 /* 割り込みを止める。戻り値を port_irq_restore に渡すと元の状態に戻る (入れ子にしても大丈夫) */
 static inline uint32_t port_irq_save(void) {

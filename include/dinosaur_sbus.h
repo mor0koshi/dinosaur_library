@@ -1,5 +1,5 @@
-#ifndef MOR0KOSHI_SBUS_H
-#define MOR0KOSHI_SBUS_H
+#ifndef DINOSAUR_SBUS_H
+#define DINOSAUR_SBUS_H
 /*
  * SBUS (プロポの受信機) の受信と、スティック・スイッチの値の変換。
  *
@@ -22,7 +22,7 @@
 #include <stdint.h>
 
 #include "main.h"
-#include "mor0koshi_common.h"
+#include "dinosaur_common.h"
 
 #if defined(HAL_UART_MODULE_ENABLED)
 

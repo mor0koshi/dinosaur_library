@@ -8,7 +8,7 @@
  * main.c の USER CODE BEGIN 2 で example_encoder_sender_init() を 1 回、
  * while (1) の中で example_encoder_sender_loop() を呼ぶ。
  */
-#include "mor0koshi_library.h"
+#include "dinosaur_library.h"
 
 #if defined(HAL_CAN_MODULE_ENABLED) && defined(HAL_TIM_MODULE_ENABLED)
 

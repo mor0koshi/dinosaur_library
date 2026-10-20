@@ -1,4 +1,4 @@
-#include "mor0koshi_encoder.h"
+#include "dinosaur_encoder.h"
 #include "test.h"
 
 static TIM_TypeDef tim16 = {.CNT = 0, .ARR = 0xFFFF};

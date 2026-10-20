@@ -2,11 +2,11 @@
  * タイマーのエンコーダーモードで回転を数える。2026_B_446 の main.c (前回との差分) を元にしている。
  * rpm は update を呼んだ間隔を DWT のサイクルカウンタで測って計算するので、呼ぶ周期を指定しなくてよい。
  */
-#include "mor0koshi_encoder.h"
+#include "dinosaur_encoder.h"
 
 #include <string.h>
 
-#include "mor0koshi_port.h"
+#include "dinosaur_port.h"
 
 #if defined(HAL_TIM_MODULE_ENABLED)
 

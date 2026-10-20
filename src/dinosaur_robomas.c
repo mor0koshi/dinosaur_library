@@ -3,11 +3,11 @@
  *   指令: 0x200 (ESC の ID 1〜4)、0x1FF (ID 5〜8)。各 2 バイトの int16、ビッグエンディアン
  *   フィードバック: 0x200 + ID。[0..1] 角度 0〜8191、[2..3] ローター rpm、[4..5] 電流、[6] 温度 (C620 のみ)
  */
-#include "mor0koshi_robomas.h"
+#include "dinosaur_robomas.h"
 
 #include <string.h>
 
-#include "mor0koshi_port.h"
+#include "dinosaur_port.h"
 
 #if defined(HAL_CAN_MODULE_ENABLED)
 

@@ -1,4 +1,4 @@
-# mor0koshi_library
+# dinosaur_library
 
 STM32 のロボット用ライブラリです。ライブラリというのは、よく使う処理をまとめた「部品集」のことです。
 プロポの受信 (SBUS)、エンコーダー、CAN 通信、ロボマスモーター (M3508 / M2006) を、
@@ -77,10 +77,10 @@ VS Code の「ターミナル › 新しいターミナル」を開いて、プ�
 
 ```bash
 cd C:\STM32_Projects
-git clone https://github.com/mor0koshi/mor0koshi_library.git
+git clone https://github.com/mor0koshi/dinosaur_library.git
 ```
 
-ライブラリが新しくなったときは、`mor0koshi_library` フォルダの中で `git pull` を打つと更新できます。
+ライブラリが新しくなったときは、`dinosaur_library` フォルダの中で `git pull` を打つと更新できます。
 
 > [!NOTE]
 > 「git は、内部コマンドまたは外部コマンド…として認識されていません」と出たら、Git が入っていません。
@@ -88,8 +88,8 @@ git clone https://github.com/mor0koshi/mor0koshi_library.git
 
 ### B. ZIP で落とす
 
-このページの上の緑の「Code」ボタン →「Download ZIP」を押します。展開してできた `mor0koshi_library-main` フォルダの
-**名前の「-main」を消して** `mor0koshi_library` にし、プロジェクトを置いているフォルダに入れます。
+このページの上の緑の「Code」ボタン →「Download ZIP」を押します。展開してできた `dinosaur_library-main` フォルダの
+**名前の「-main」を消して** `dinosaur_library` にし、プロジェクトを置いているフォルダに入れます。
 
 ### 置く場所
 
@@ -97,7 +97,7 @@ git clone https://github.com/mor0koshi/mor0koshi_library.git
 
 ```text
 C:\STM32_Projects\
-  mor0koshi_library\     ← ライブラリ (名前はこのとおり)
+  dinosaur_library\     ← ライブラリ (名前はこのとおり)
     include\             ← 使う側が読むファイル (関数の一覧)
     src\                 ← ライブラリの中身
     examples\            ← 使い方の例
@@ -122,14 +122,14 @@ CubeMX で作ったプロジェクトに、3 か所書き足します。
 ```cmake
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)
-add_subdirectory(../mor0koshi_library mor0koshi_library)    # ← この行を足す
+add_subdirectory(../dinosaur_library dinosaur_library)    # ← この行を足す
 
 # (このあいだの行はそのまま)
 
 # Add linked libraries
 target_link_libraries(${CMAKE_PROJECT_NAME}
     stm32cubemx
-    mor0koshi_library                                       # ← この行を足す
+    dinosaur_library                                       # ← この行を足す
 
     # Add user defined libraries
 )
@@ -137,8 +137,8 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
 
 | 足した行 | 意味 |
 |---|---|
-| `add_subdirectory(../mor0koshi_library mor0koshi_library)` | 「1 つ上のフォルダにある mor0koshi_library もいっしょにビルドして」。`../` は 1 つ上の階層のこと。だからライブラリはプロジェクトの隣に置く |
-| `mor0koshi_library` (target_link_libraries の中) | できあがったライブラリを、自分のプログラムにつなげる |
+| `add_subdirectory(../dinosaur_library dinosaur_library)` | 「1 つ上のフォルダにある dinosaur_library もいっしょにビルドして」。`../` は 1 つ上の階層のこと。だからライブラリはプロジェクトの隣に置く |
+| `dinosaur_library` (target_link_libraries の中) | できあがったライブラリを、自分のプログラムにつなげる |
 
 ライブラリは、あなたのプロジェクトと同じ設定 (マイコンの種類など) でビルドされます。だから F446RE でも F767ZI でも同じものが使えます。
 CubeMX で使っていない機能 (たとえば CAN) の部品は、自動でビルドから外れます。
@@ -153,7 +153,7 @@ CubeMX で使っていない機能 (たとえば CAN) の部品は、自動で�
 ```c
 /* USER CODE BEGIN Includes */
 #include <stdio.h>                 // printf を使うため (講習 02)
-#include "mor0koshi_library.h"     // ライブラリを使うため
+#include "dinosaur_library.h"     // ライブラリを使うため
 /* USER CODE END Includes */
 ```
 
@@ -679,7 +679,7 @@ void lib_error_hook(lib_status_t err, const char *where) {   // ライブラリ�
 |---|---|
 | ビルドで `multiple definition of 'HAL_...'` | 自分で書いたコールバックとライブラリのものが重なっている。自分の方を消す (SBUS 以外の UART なら `uart_rx_event_hook` に移す) |
 | ビルドで `multiple definition of 'can_send'` など | 自分の関数の名前がライブラリと同じ。自分の方の名前を変える |
-| `mor0koshi_library.h` が見つからない／`add_subdirectory` でエラー | CMakeLists.txt の 2 か所を足した？ ライブラリのフォルダはプロジェクトの隣で、名前はちょうど `mor0koshi_library`？ (ZIP の「-main」が残っていない？) |
+| `dinosaur_library.h` が見つからない／`add_subdirectory` でエラー | CMakeLists.txt の 2 か所を足した？ ライブラリのフォルダはプロジェクトの隣で、名前はちょうど `dinosaur_library`？ (ZIP の「-main」が残っていない？) |
 | `sbus_ok` がずっと 0 | 講習 04 のトラブルの表と同じ確認 (配線・反転・通信設定・NVIC)。DMA が Circular だと `sbus_init` が失敗する |
 | 値がずっと変わらない | ループで `sbus_update` / `encoder_update` を呼んでいる？ |
 | `can_init` が `LIB_ERR_IRQ_OFF` | NVIC で「CAN1 RX0 interrupt」と「CAN1 TX interrupts」の両方にチェックした？ |
@@ -775,4 +775,4 @@ test/arm_build_check.sh ../mortor_test link test/linkcheck_nocan.c \
 `link` の最後に並べるのは、ライブラリのものになっているべき HAL のコールバックです。
 それが無い (HAL の空の関数のまま) か、並べていないのにライブラリのものが入っていると NG になります。
 
-設計の詳しいことは [`docs/specs/2026-10-20-mor0koshi-library-design.md`](docs/specs/2026-10-20-mor0koshi-library-design.md) にあります。
+設計の詳しいことは [`docs/specs/2026-10-20-dinosaur-library-design.md`](docs/specs/2026-10-20-dinosaur-library-design.md) にあります。

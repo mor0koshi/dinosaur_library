@@ -1,5 +1,5 @@
-#ifndef MOR0KOSHI_ENCODER_H
-#define MOR0KOSHI_ENCODER_H
+#ifndef DINOSAUR_ENCODER_H
+#define DINOSAUR_ENCODER_H
 /*
  * タイマーのエンコーダーモードで回転を数える。CAN とは関係なく、その基板の中でそのまま使える。
  *
@@ -19,7 +19,7 @@
 #include <stdint.h>
 
 #include "main.h"
-#include "mor0koshi_common.h"
+#include "dinosaur_common.h"
 
 #if defined(HAL_TIM_MODULE_ENABLED)
 

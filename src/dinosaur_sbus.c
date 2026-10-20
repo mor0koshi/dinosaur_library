@@ -2,11 +2,11 @@
  * SBUS の受信。2026_B_767 の sbus_handler.c を元にしている (実機確認済みの判定をそのまま使う)。
  * UART がアイドルになる (1 フレーム受け終わる) たびに、バッファから 0x0F を探して 25 バイトをデコードする。
  */
-#include "mor0koshi_sbus.h"
+#include "dinosaur_sbus.h"
 
 #include <string.h>
 
-#include "mor0koshi_port.h"
+#include "dinosaur_port.h"
 
 #if defined(HAL_UART_MODULE_ENABLED)
 

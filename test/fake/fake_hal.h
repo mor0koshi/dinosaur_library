@@ -2,7 +2,7 @@
 #define FAKE_HAL_H
 /* HAL の偽物の状態。テストから値を入れたり、呼ばれた内容を確かめたりする */
 #include "main.h"
-#include "mor0koshi_common.h"
+#include "dinosaur_common.h"
 
 #define FAKE_MAX_SENT 64
 #define FAKE_MAX_RXQ 16

@@ -21,7 +21,7 @@ if [ "$mode" = link ] && [ $# -lt 4 ]; then
     exit 2
 fi
 expected=" ${*:4} "
-work=$(mktemp -d "${TMPDIR:-/tmp}/mor0koshi_check.XXXXXX")
+work=$(mktemp -d "${TMPDIR:-/tmp}/dinosaur_check.XXXXXX")
 proj="$work/$name"
 
 cp -a "$src" "$proj"
@@ -29,13 +29,13 @@ rm -rf "$proj/build" "$proj/.git"
 
 {
     echo ''
-    echo '# ---- mor0koshi_library のビルド確認 (arm_build_check.sh が追加) ----'
-    echo 'set(MOR0KOSHI_BUILD_EXAMPLES ON CACHE BOOL "" FORCE)'
-    echo "add_subdirectory(\"$lib_dir\" mor0koshi_library)"
+    echo '# ---- dinosaur_library のビルド確認 (arm_build_check.sh が追加) ----'
+    echo 'set(DINOSAUR_BUILD_EXAMPLES ON CACHE BOOL "" FORCE)'
+    echo "add_subdirectory(\"$lib_dir\" dinosaur_library)"
     if [ "$mode" = link ]; then
         cp "$3" "$proj/linkcheck.c"
         echo 'target_sources(${CMAKE_PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/linkcheck.c)'
-        echo 'target_link_libraries(${CMAKE_PROJECT_NAME} mor0koshi_library)'
+        echo 'target_link_libraries(${CMAKE_PROJECT_NAME} dinosaur_library)'
         # 呼ばれていない関数も残して、どのコールバックが選ばれたかを nm で見られるようにする
         echo 'target_link_options(${CMAKE_PROJECT_NAME} PRIVATE -Wl,--no-gc-sections)'
     fi
@@ -45,12 +45,13 @@ cd "$proj"
 cmake --preset Debug > /dev/null
 if [ "$mode" = link ]; then
     cmake --build build/Debug 2>&1 | tee build.log
-    cmake --build build/Debug --target mor0koshi_examples 2>&1 | tee -a build.log
+    cmake --build build/Debug --target dinosaur_examples 2>&1 | tee -a build.log
 else
-    cmake --build build/Debug --target mor0koshi_library mor0koshi_examples 2>&1 | tee build.log
+    cmake --build build/Debug --target dinosaur_library dinosaur_examples 2>&1 | tee build.log
 fi
 
-if grep -E "mor0koshi_library/[^:]*:[0-9]+:[0-9]+: warning" build.log; then
+# ライブラリのフォルダ ($lib_dir) の中のファイルに出た警告だけを数える (フォルダ名を変えても動くように、実際のパスで見る)
+if grep -F "$lib_dir/" build.log | grep -E ":[0-9]+:[0-9]+: warning"; then
     echo "NG: ライブラリか例に警告があります"
     exit 1
 fi
@@ -75,7 +76,7 @@ if [ "$mode" = link ]; then
         where=$(arm-none-eabi-addr2line -e "$elf" "0x$addr")
         echo "$sym: $type $where"
         case "$where" in
-            *mor0koshi_library/src/*) in_lib=1 ;;
+            "$lib_dir"/src/*) in_lib=1 ;;
             *) in_lib=0 ;;
         esac
         if [ "$want" = 1 ] && [ "$in_lib" = 0 ]; then

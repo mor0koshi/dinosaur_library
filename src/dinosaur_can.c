@@ -3,11 +3,11 @@
  * 受信: フィルタは全部受け取る設定にして、ID を見て箱 (can_listen) や関数 (can_subscribe) に配る。
  * 送信: メールボックスは 3 つしかないので、16 フレームの列に積んで、送信完了の割り込みで順に出す。
  */
-#include "mor0koshi_can.h"
+#include "dinosaur_can.h"
 
 #include <string.h>
 
-#include "mor0koshi_port.h"
+#include "dinosaur_port.h"
 
 /* ---- 詰める・取り出す (CAN が無効なプロジェクトでも使える) ---- */
 

@@ -1,5 +1,5 @@
 /* arm_build_check.sh の link で足すファイル。ライブラリの全部品をリンクさせる (実行はしない) */
-#include "mor0koshi_library.h"
+#include "dinosaur_library.h"
 
 extern CAN_HandleTypeDef hcan1;
 extern TIM_HandleTypeDef htim1;

@@ -1,5 +1,5 @@
-#ifndef MOR0KOSHI_CAN_H
-#define MOR0KOSHI_CAN_H
+#ifndef DINOSAUR_CAN_H
+#define DINOSAUR_CAN_H
 /*
  * CAN の送受信 (標準 ID のみ)。
  *
@@ -18,7 +18,7 @@
 #include <stdint.h>
 
 #include "main.h"
-#include "mor0koshi_common.h"
+#include "dinosaur_common.h"
 
 #ifdef __cplusplus
 extern "C" {

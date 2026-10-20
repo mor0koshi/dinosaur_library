@@ -1,7 +1,7 @@
 /* エンコーダーの値を CAN で送る・受け取る。1 個 = 1 フレーム ([0..3] 累積カウント、[4..7] rpm) */
-#include "mor0koshi_encoder_can.h"
+#include "dinosaur_encoder_can.h"
 
-#include "mor0koshi_port.h"
+#include "dinosaur_port.h"
 
 #if defined(HAL_CAN_MODULE_ENABLED)
 

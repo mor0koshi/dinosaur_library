@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(mor0koshi_library_test C)
+project(dinosaur_library_test C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -9,12 +9,12 @@ set(LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 # ライブラリのソースと HAL の偽物。テストの実行ファイルごとに全部まとめてリンクする
 set(LIB_SOURCES
-    ${LIB_DIR}/src/mor0koshi_common.c
-    ${LIB_DIR}/src/mor0koshi_can.c
-    ${LIB_DIR}/src/mor0koshi_sbus.c
-    ${LIB_DIR}/src/mor0koshi_encoder.c
-    ${LIB_DIR}/src/mor0koshi_encoder_can.c
-    ${LIB_DIR}/src/mor0koshi_robomas.c
+    ${LIB_DIR}/src/dinosaur_common.c
+    ${LIB_DIR}/src/dinosaur_can.c
+    ${LIB_DIR}/src/dinosaur_sbus.c
+    ${LIB_DIR}/src/dinosaur_encoder.c
+    ${LIB_DIR}/src/dinosaur_encoder_can.c
+    ${LIB_DIR}/src/dinosaur_robomas.c
     ${CMAKE_CURRENT_SOURCE_DIR}/fake/fake_hal.c
     ${CMAKE_CURRENT_SOURCE_DIR}/fake/fake_can.c
 )

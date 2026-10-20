@@ -1,4 +1,4 @@
-# mor0koshi_library 設計
+# dinosaur_library 設計
 
 - 日付: 2026-10-20
 - 状態: 設計確定・実装前
@@ -37,25 +37,25 @@ STM32 (HAL) のロボット用ファームウェアで、毎回書き直して�
 ## 全体の構成
 
 ```
-STM32 project/mor0koshi_library/   ← 独立した git リポジトリ
-  CMakeLists.txt                   ← 静的ライブラリ mor0koshi_library を定義
+STM32 project/dinosaur_library/   ← 独立した git リポジトリ
+  CMakeLists.txt                   ← 静的ライブラリ dinosaur_library を定義
   README.md
   include/
-    mor0koshi_library.h            ← これ 1 つを include すれば全部使える
-    mor0koshi_common.h             ← lib_status_t、lib_error_hook
-    mor0koshi_can.h
-    mor0koshi_sbus.h
-    mor0koshi_encoder.h
-    mor0koshi_encoder_can.h
-    mor0koshi_robomas.h
+    dinosaur_library.h            ← これ 1 つを include すれば全部使える
+    dinosaur_common.h             ← lib_status_t、lib_error_hook
+    dinosaur_can.h
+    dinosaur_sbus.h
+    dinosaur_encoder.h
+    dinosaur_encoder_can.h
+    dinosaur_robomas.h
   src/
-    mor0koshi_port.h               ← HAL・時間・DWT への入口 (テストでは偽物に差し替える)
-    mor0koshi_common.c
-    mor0koshi_can.c                ← CAN の HAL コールバックもここ
-    mor0koshi_sbus.c               ← UART の HAL コールバックもここ
-    mor0koshi_encoder.c
-    mor0koshi_encoder_can.c
-    mor0koshi_robomas.c
+    dinosaur_port.h               ← HAL・時間・DWT への入口 (テストでは偽物に差し替える)
+    dinosaur_common.c
+    dinosaur_can.c                ← CAN の HAL コールバックもここ
+    dinosaur_sbus.c               ← UART の HAL コールバックもここ
+    dinosaur_encoder.c
+    dinosaur_encoder_can.c
+    dinosaur_robomas.c
   examples/
     robomas_sbus.c                 ← プロポで M3508 / M2006 を回す
     encoder_sender.c               ← エンコーダー → CAN で送る基板
@@ -83,22 +83,22 @@ STM32 project/mor0koshi_library/   ← 独立した git リポジトリ
 
 - **関数と型の頭には何も付けない** (`can_send`、`sbus_stick`、`encoder_rpm`、`robomas_set_rpm`)。部品の名前がそのまま頭になる
   - 使う側が同じ名前の関数を書くとビルドエラー (multiple definition) になる。黙って変な動きはしないが、そのときはどちらかの名前を変える。README に書く
-- **ファイル名には `mor0koshi_` を付ける**。CubeMX の「周辺機能ごとに .c/.h を分ける」設定で生成される `can.h`・`tim.h`・`usart.h` とかぶらないようにするため
+- **ファイル名には `dinosaur_` を付ける**。CubeMX の「周辺機能ごとに .c/.h を分ける」設定で生成される `can.h`・`tim.h`・`usart.h` とかぶらないようにするため
 
 ### プロジェクトへの組み込み
 
 各プロジェクトの `CMakeLists.txt` に 2 か所足すだけ。
 
 ```cmake
-add_subdirectory(../mor0koshi_library mor0koshi_library)
+add_subdirectory(../dinosaur_library dinosaur_library)
 
 target_link_libraries(${CMAKE_PROJECT_NAME}
     stm32cubemx
-    mor0koshi_library
+    dinosaur_library
 )
 ```
 
-- `mor0koshi_library` は **STATIC ライブラリ**で、`target_link_libraries(mor0koshi_library PUBLIC stm32cubemx)` によってそのプロジェクトの HAL のインクルードパスとマクロ (`STM32F767xx` など) でコンパイルされる。そのため F767 でも F446 でも同じソースが使える
+- `dinosaur_library` は **STATIC ライブラリ**で、`target_link_libraries(dinosaur_library PUBLIC stm32cubemx)` によってそのプロジェクトの HAL のインクルードパスとマクロ (`STM32F767xx` など) でコンパイルされる。そのため F767 でも F446 でも同じソースが使える
 - ライブラリの中から HAL を使うときは `#include "main.h"` を通す (CubeMX のプロジェクトには必ずある)
 - **使わない部品はコンパイルされない**: 各 .c は `HAL_CAN_MODULE_ENABLED` / `HAL_UART_MODULE_ENABLED` / `HAL_TIM_MODULE_ENABLED` が無ければ中身が空になる。SBUS だけのプロジェクトでも使える
 
@@ -116,13 +116,13 @@ CAN の部品 (`can_*`・`robomas_*`・`encoder_can_*` のどれか) を使う�
 
 | コールバック | 置き場所 | 振り分け |
 |---|---|---|
-| `HAL_CAN_RxFifo0MsgPendingCallback` | `mor0koshi_can.c` | `hcan` で `can_t` を探し、ID で箱・関数に配る |
-| `HAL_CAN_TxMailbox0/1/2CompleteCallback`、`HAL_CAN_TxMailbox0/1/2AbortCallback` | `mor0koshi_can.c` | 送信待ちの列から次を出す |
-| `HAL_UARTEx_RxEventCallback` | `mor0koshi_sbus.c` | 登録した `sbus_t` ならデコード。それ以外は `uart_rx_event_hook(huart, size)` へ |
-| `HAL_UART_ErrorCallback` | `mor0koshi_sbus.c` | 登録した `sbus_t` なら受信を再開。それ以外は `uart_error_hook(huart)` へ |
+| `HAL_CAN_RxFifo0MsgPendingCallback` | `dinosaur_can.c` | `hcan` で `can_t` を探し、ID で箱・関数に配る |
+| `HAL_CAN_TxMailbox0/1/2CompleteCallback`、`HAL_CAN_TxMailbox0/1/2AbortCallback` | `dinosaur_can.c` | 送信待ちの列から次を出す |
+| `HAL_UARTEx_RxEventCallback` | `dinosaur_sbus.c` | 登録した `sbus_t` ならデコード。それ以外は `uart_rx_event_hook(huart, size)` へ |
+| `HAL_UART_ErrorCallback` | `dinosaur_sbus.c` | 登録した `sbus_t` なら受信を再開。それ以外は `uart_error_hook(huart)` へ |
 
 - `uart_rx_event_hook` / `uart_error_hook` は中身が空の weak 関数。ライブラリが使わない UART (Lidar など) があるときだけ、使う側が書く
-- ライブラリは静的ライブラリなので、**呼んだ部品の .c だけがリンクされる**。`sbus_init` を呼ばないプロジェクトでは `mor0koshi_sbus.c` がリンクされず、自分で書いた `HAL_UART_ErrorCallback` がそのまま使える
+- ライブラリは静的ライブラリなので、**呼んだ部品の .c だけがリンクされる**。`sbus_init` を呼ばないプロジェクトでは `dinosaur_sbus.c` がリンクされず、自分で書いた `HAL_UART_ErrorCallback` がそのまま使える
 - 使う部品と同じ HAL コールバックを使う側も書くと、リンクエラー (multiple definition) になって気づける。そのときは自分の処理を `uart_error_hook` などに移す
 - CAN の FIFO1 と `HAL_CAN_ErrorCallback` はライブラリが使わないので、使う側が自由に書ける
 
@@ -145,7 +145,7 @@ void lib_error_hook(lib_status_t err, const char *where);  // weak。中身は�
 - NULL を渡された関数は何もしない (値を返す関数は 0 を返す。ただし `*_age_ms` は UINT32_MAX = 一度も届いていない扱い)。HardFault にはならない
 - 診断用の数: `can_dropped_count(&can)` (送信で捨てた数)、`sbus_frame_count(&sbus)` (受信フレーム数)、`sbus_error_count(&sbus)` (UART エラーの数)
 
-## 1. CAN (`mor0koshi_can`)
+## 1. CAN (`dinosaur_can`)
 
 ### CubeMX 側の準備
 
@@ -196,7 +196,7 @@ can_subscribe_range(&can1, 0x201, 0x208, my_handler, NULL);
 - CAN1・CAN2・CAN3 を同時に使える (`can_t` は 3 つまで登録)
 - `can_t` 全体の最終受信時刻も持ち、`can_bus_age_ms(&can1)` で何か 1 つでも届いてからの時間が分かる
 
-## 2. SBUS (`mor0koshi_sbus`)
+## 2. SBUS (`dinosaur_sbus`)
 
 ### CubeMX 側の準備
 
@@ -258,7 +258,7 @@ sbus_set_deadband(&sbus, 26);                  // 中立から ±26 以内は 0
 - `sbus_t` は 2 つまで登録できる
 - RX の DMA が設定されていない (`huart->hdmarx == NULL`) か、Circular (`Init.Mode == DMA_CIRCULAR`) のときは `sbus_init` が `LIB_ERR_IRQ_OFF` を返す (Circular だと受信をかけ直せず、古いフレームを読み続けるため)
 
-## 3. エンコーダー (`mor0koshi_encoder`)
+## 3. エンコーダー (`dinosaur_encoder`)
 
 ### CubeMX 側の準備
 
@@ -290,7 +290,7 @@ encoder_reset(&enc1);                // 累積を 0 に戻す
 - 1ms 周期だと遅い回転の分解能が粗い (2048 カウントで 1 カウント ≒ 29rpm)。遅い回転を測るなら 10ms 周期をすすめる (README)
 - `update` と値の読み出しは同じ場所 (メインループ同士、または割り込み同士) で行う前提
 
-## 4. エンコーダー CAN (`mor0koshi_encoder_can`)
+## 4. エンコーダー CAN (`dinosaur_encoder_can`)
 
 **エンコーダー 1 個を 1 フレームで**送る。ID は使う側が直接決める。
 
@@ -321,7 +321,7 @@ uint32_t age = encoder_can_age_ms(&roller1);   // 一度も届いていなけれ
 - ロボマスが使う 0x1FF〜0x2FF とぶつからないよう 0x300 番台をすすめる
 - 1Mbps で 1 フレーム約 0.13ms。6 個を 1ms ごとに送るとバスの約 8 割になるので、10ms ごと (約 8%) をすすめる
 
-## 5. ロボマス (`mor0koshi_robomas`)
+## 5. ロボマス (`dinosaur_robomas`)
 
 ### 準備
 
