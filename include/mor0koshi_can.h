@@ -11,6 +11,8 @@
  *
  * CubeMX の準備: CAN を有効にして通信速度を決め、NVIC で RX0 と TX の割り込みをオンにする。
  * HAL_CAN_Start とフィルタの設定は自分で書かない (can_init がやる)。
+ * can_init は 1 つの CAN につき 1 回、can_listen・can_subscribe・robomas_init より先に呼ぶ (後から呼ぶと登録が消える)。
+ * 別の can_t で、登録済みの CAN を初期化すると LIB_ERR_PARAM。
  */
 #include <stdbool.h>
 #include <stdint.h>

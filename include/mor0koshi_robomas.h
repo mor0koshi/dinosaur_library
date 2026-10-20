@@ -14,7 +14,9 @@
  * robomas_update をタイマー割り込みで呼んでも、メインループの robomas_set_* / robomas_stop_all と同時に動いて大丈夫
  * (指令の書き込みと update の計算は、割り込みを止めて行う)。
  * ゲインは 1ms ごとに robomas_update を呼ぶ前提。M3508 と位置制御の初期ゲインは仮の値なので実機で調整すること。
- * ロボマスは 1 台で 1Mbps の CAN の約 13% を使う。1 本の CAN には 5 台くらいまでにする。
+ * ロボマスは 1 台で 1Mbps の CAN の約 13% を使い、指令のフレームも 1ms ごとに送る (4 台で約 65%、5 台で約 91%)。
+ * 1 本の CAN には 4 台くらいまでにする。
+ * CAN の断線や ESC の電源断のあいだの回転は数えられないので、そのあとは robomas_reset_angle で原点を取り直す。
  */
 #include <stdbool.h>
 #include <stdint.h>

@@ -112,6 +112,8 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
 
 HAL のコールバックは 1 つのプロジェクトに 1 つしか書けない。ライブラリが自分で書いて振り分ける。
 
+CAN の部品 (`can_*`・`robomas_*`・`encoder_can_*` のどれか) を使うと CAN のコールバックがリンクされ、SBUS (`sbus_*`) を使うと UART のコールバックがリンクされる。
+
 | コールバック | 置き場所 | 振り分け |
 |---|---|---|
 | `HAL_CAN_RxFifo0MsgPendingCallback` | `mor0koshi_can.c` | `hcan` で `can_t` を探し、ID で箱・関数に配る |
@@ -139,7 +141,7 @@ void lib_error_hook(lib_status_t err, const char *where);  // weak。中身は�
 ```
 
 - `init`・`listen`・`subscribe`・`send`・`add` は `lib_status_t` を返す (`robomas_add` だけはモーターへのポインタを返し、失敗すると NULL)
-- 失敗したときは必ず `lib_error_hook` も呼ぶ。使う側が書けば `printf` などで原因が分かる。`where` は関数名
+- 失敗したときは必ず `lib_error_hook` も呼ぶ。使う側が書けば `printf` などで原因が分かる。`where` は関数名。割り込みの中から呼ばれることもある (SBUS のコールバック、割り込みの中の `can_send`)。`printf` には `stdio.h` と UART への `_write` の書き換えが要る
 - NULL を渡された関数は何もしない (値を返す関数は 0 を返す。ただし `*_age_ms` は UINT32_MAX = 一度も届いていない扱い)。HardFault にはならない
 - 診断用の数: `can_dropped_count(&can)` (送信で捨てた数)、`sbus_frame_count(&sbus)` (受信フレーム数)、`sbus_error_count(&sbus)` (UART エラーの数)
 
@@ -183,6 +185,9 @@ can_subscribe_range(&can1, 0x201, 0x208, my_handler, NULL);
 
 - **フィルタ**: 全部受け取る設定 (マスク 0) で FIFO0 へ。フィルタの番号は CAN1・CAN3 が 0、CAN2 が 14 (SlaveStartFilterBank = 14)
 - **ABOM** (バスオフからの自動復帰): `HAL_CAN_Start` の前、初期化モードのうちに `MCR` の `ABOM` ビットを立てる。CubeMX の設定に関係なく有効になる
+- **自動再送**: 同じく `NART` ビットを下ろす。オンのままだと送信に失敗したとき完了の割り込みが来ず、送信の列が止まる
+- **1 つの CAN に 1 つの `can_t`**: `can_init` は 1 つの CAN につき 1 回、`can_listen`・`can_subscribe`・`robomas_init` より先に呼ぶ (同じ `can_t` をもう一度 `can_init` すると登録が消える)。別の `can_t` で、すでに登録された CAN を初期化しようとすると `LIB_ERR_PARAM` を返す。SBUS の `sbus_init` も同じ (別の `sbus_t` で同じ UART は `LIB_ERR_PARAM`)
+- **NULL**: `can_put_*` は `d` が NULL なら何もせず、`can_get_*` は 0 を返す
 - **設定忘れの検出**: `can_init` は `NVIC_GetEnableIRQ` で RX0 と TX の割り込みが有効か確かめ、オフなら `LIB_ERR_IRQ_OFF` を返す
 - **受信の振り分け**: 1 本の CAN につき登録 16 個まで (`can_listen`・`can_subscribe`・`can_subscribe_range` の合計)。ID が重なる登録は両方に配る。どれにも当たらない ID は捨てる
 - **送信待ちの列**: メールボックスは 3 つしかないので、16 フレームのリングバッファを持つ。`can_send` は空いているメールボックスがあれば直接入れ、無ければ列に積む。送信完了・中止の割り込みで列から順に出す。列があふれたら新しいほうを捨てて `LIB_ERR_FULL` を返し、捨てた数を数える
@@ -397,12 +402,14 @@ robomas_stop_all(&rm);              // 全モーターを電流指令 0 にし�
 ### 安全
 
 - フィードバックが 100ms 届いていないモーターは `robomas_ok` が false になり、`update` で出力を 0 にして積分をリセットする (センサーなしで積分がたまり続け、復帰した瞬間に暴れるのを防ぐ)
-- `robomas_stop_all` は SBUS が NG のときに呼ぶ想定で、例のコードにもそう書く
+- `robomas_stop_all` は SBUS が NG のときに呼ぶ想定で、例のコードにもそう書く。NG のときは `robomas_set_*` を呼ばない (`stop_all` を上書きしてしまう)
+- `robomas_update` はメインループでもタイマー割り込みでも呼べる。`robomas_set_*` と `robomas_stop_all` の書き込み (種類 + 目標 + 積分のリセット) と、`update` の全モーターの計算は、`port_irq_save` / `port_irq_restore` で割り込みを止めて行う。`can_send` は自分で止めるので、`update` は計算を終えて割り込みを戻してから呼ぶ
+- CAN の断線や ESC の電源断のあいだに回った分は数えられず、累積角度は 1 回の途絶につき最大でローター半周ぶんずれうる。そのあとは `robomas_reset_angle` で原点を取り直す
 - `update` は、ID 1〜4 のモーターが 1 つ以上あれば 0x200 を、ID 5〜8 のモーターが 1 つ以上あれば 0x1FF を送る (使っていない範囲のフレームは送らない)
 
 ### CAN の通信量 (README に書く)
 
-ロボマスは 1 台ごとに 1ms ごとにフィードバックを返すので、**1 台で 1Mbps の約 13%** を使う。**1 本の CAN にはおよそ 5 台まで**にし、それより多いときは CAN2 に分ける。エンコーダーのフレームも同じバスに流すならその分も足す。
+ロボマスは 1 台ごとに 1ms ごとにフィードバックを返すので、**1 台で 1Mbps の約 13%** を使う。さらに指令のフレーム (0x200、ID 5〜8 を使うなら 0x1FF も) を 1ms ごとに送る。4 台なら フィードバック 4000 + 指令 1000 フレーム/秒で約 65%、5 台は指令が 2 本になって約 91%。**1 本の CAN にはおよそ 4 台まで**にし、それより多いときは CAN2 に分ける。エンコーダーのフレームも同じバスに流すならその分も足す。
 
 ## テスト
 
@@ -418,7 +425,7 @@ robomas_stop_all(&rm);              // 全モーターを電流指令 0 にし�
 | CAN | ID ごとの振り分け (箱・関数・範囲・重なり)、知らない ID は捨てる、4 フレーム以上送ると列に入り完了割り込みで順に出る、あふれたら `LIB_ERR_FULL` と捨てた数、`put` / `get` の往復、CAN2 のフィルタ番号 14、割り込みがオフなら `LIB_ERR_IRQ_OFF` |
 | エンコーダー | 16bit・32bit の桁あふれ (両方向)、逆向き、rpm (偽の DWT で時間を進める)、10 秒以上空いたら rpm 0、リセット |
 | エンコーダー CAN | 送ったフレームの中身、受けた値の取り出し (負の値も)、未受信の age |
-| ロボマス | フィードバックの解釈 (ビッグエンディアン)、何回転してもの角度 (両方向・一周またぎ・最初は 0 度)、出力軸への換算、0x200 / 0x1FF の中身 (使っていない範囲のフレームは送らない)、電流の頭打ち、積分の頭打ち、途絶 → 出力 0 と積分リセット、`stop_all`、モード切替で積分リセット、同じ ID の二重登録は NULL |
+| ロボマス | 指令と update が割り込みを止めて動く (終わったら戻す)、フィードバックの解釈 (ビッグエンディアン)、何回転してもの角度 (両方向・一周またぎ・最初は 0 度)、出力軸への換算、0x200 / 0x1FF の中身 (使っていない範囲のフレームは送らない)、電流の頭打ち、積分の頭打ち、途絶 → 出力 0 と積分リセット、`stop_all`、モード切替で積分リセット、同じ ID の二重登録は NULL |
 
 ### ARM でのビルド確認
 

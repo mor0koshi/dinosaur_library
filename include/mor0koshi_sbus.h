@@ -13,6 +13,7 @@
  * CubeMX の準備: UART を 100000bps・9bit (偶数パリティ込み)・ストップビット 2 にし、
  * RX の DMA (Normal。Circular は不可) と UART の割り込みをオンにする。F7 は「RX 反転」もオン。
  * F4 の UART には反転の機能がないので、基板にインバーターが要る。
+ * sbus_init は 1 つの UART につき 1 回 (別の sbus_t で同じ UART を初期化すると LIB_ERR_PARAM)。
  *
  * sbus_init を呼ぶと、HAL_UARTEx_RxEventCallback と HAL_UART_ErrorCallback はライブラリが持つ。
  * 他の UART の分は uart_rx_event_hook / uart_error_hook に来るので、必要ならそちらを書く。

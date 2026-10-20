@@ -11,7 +11,7 @@ STM32 (HAL) のロボット用ライブラリです。次の 4 つを、`init` �
 
 おまけで、エンコーダーの値を CAN で別の基板に送る `encoder_can_*` もあります。
 
-- 対象: bxCAN を持つ STM32 F4 / F7 (F446・F767 で確認)。G4 / H7 の FDCAN には対応していません
+- 対象: bxCAN を持つ STM32 F4 / F7 (F446・F767 でビルドを確認。実機での確認はこれから)。G4 / H7 の FDCAN には対応していません
 - 言語: C11。malloc は使いません
 
 ## プロジェクトへの組み込み
@@ -41,6 +41,8 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
 
 CubeMX: CAN を有効にして通信速度を決め、**NVIC で RX0 と TX の割り込みをオン**にします。
 `HAL_CAN_Start` とフィルタの設定は自分で書きません (`can_init` がやります)。
+`can_init` は **1 つの CAN につき 1 回だけ**、`can_listen`・`can_subscribe`・`robomas_init` より**先に**呼びます
+(後から呼ぶと登録が消えます)。別の `can_t` で同じ CAN を初期化しようとすると `LIB_ERR_PARAM` になります。
 
 ```c
 can_t can1;
@@ -68,7 +70,7 @@ can_subscribe(&can1, 0x456, on_rx, NULL);
 - 送信のメールボックスは 3 つしかないので、ライブラリは 16 フレームの待ち列を持っています。
   列があふれると `can_send` が `LIB_ERR_FULL` を返します (ケーブルが抜けているときなど)
 - 登録 (`can_listen`・`can_subscribe`) は 1 本の CAN につき 16 個までです
-- ケーブルが抜けてバスオフになっても、自動で復帰します
+- ケーブルが抜けてバスオフになっても、自動で復帰します (ABOM)。送信の自動再送 (NART オフ) もオンにします
 
 ### SBUS
 
@@ -78,7 +80,7 @@ F4 の UART には反転の機能がないので、基板にインバーター�
 
 ```c
 sbus_t sbus;
-sbus_init(&sbus, &huart5);
+sbus_init(&sbus, &huart5);     // 1 つの UART につき 1 回だけ (別の sbus_t で同じ UART を初期化すると LIB_ERR_PARAM)
 
 // メインループで毎周期 1 回
 sbus_update(&sbus);
@@ -153,23 +155,40 @@ robomas_init(&rm, &can1);
 robomas_motor_t *wheel = robomas_add(&rm, ROBOMAS_M3508, 1);
 robomas_motor_t *arm   = robomas_add(&rm, ROBOMAS_M2006, 5);
 
+// 1ms ごとの繰り返し (examples/robomas_sbus.c と同じ形)
+sbus_update(&sbus);
+if (!sbus_ok(&sbus)) {
+    robomas_stop_all(&rm);                                   // プロポが切れたら全部止める
+} else {
+    robomas_set_rpm(wheel, (float)sbus_stick(&sbus, 1) * 0.3f);   // 速度制御: 出力軸 rpm
+    robomas_set_angle(arm, (float)sbus_switch3(&sbus, 6) * 90.0f); // 位置制御: 出力軸の角度 [度]
+}
+robomas_update(&rm);   // 止めているときも呼び続ける (電流 0 を送り続ける)
+```
+
+使える指令 (最後に呼んだものが有効です。`set_*` は NG のときに呼ばないでください。`stop_all` を上書きしてしまいます):
+
+```c
 robomas_set_rpm(wheel, 300.0f);   // 速度制御: 出力軸 rpm
 robomas_set_angle(arm, 90.0f);    // 位置制御: 出力軸の角度 [度] (720 なら 2 回転)
 robomas_set_current(wheel, 2000); // 電流を直接 (M3508: ±16384 / M2006: ±10000)
+```
 
-// 1ms ごとに 1 回
-robomas_update(&rm);
+読む値:
 
+```c
 float rpm = robomas_rpm(wheel);   // 出力軸 rpm
 float deg = robomas_angle(arm);   // 出力軸の累積角度 (起動時の位置が 0 度)
 robomas_reset_angle(arm);         // 今の位置を 0 度に
 bool ok = robomas_ok(wheel);      // フィードバックが届いているか
-
-if (!sbus_ok(&sbus)) robomas_stop_all(&rm);  // プロポが切れたら止める (update は呼び続ける)
 ```
 
+- `robomas_update` はメインループからでも、タイマー割り込みの中からでも呼べます。メインループの
+  `robomas_set_*` / `robomas_stop_all` と同時に動いても大丈夫です (指令の書き込みと計算は、割り込みを止めて行います)
 - 値は全部**出力軸** (ギアの先) です。ギア比は種類から自動で入ります (M3508 ≒ 19.2、M2006 = 36)
 - フィードバックが 100ms 届かないモーターは、自動で出力 0 になります
+- CAN の断線や ESC の電源断のあいだに、ローターが回ると、累積角度は 1 回の途絶につき最大でローター半周ぶんずれることがあります。
+  そうなったあとは `robomas_reset_angle` で原点を取り直してください
 
 ## HAL のコールバックについて
 
@@ -178,8 +197,8 @@ if (!sbus_ok(&sbus)) robomas_stop_all(&rm);  // プロポが切れたら止め�
 
 | 部品を使うと | ライブラリが持つコールバック |
 |---|---|
-| `can_init` | `HAL_CAN_RxFifo0MsgPendingCallback`、`HAL_CAN_TxMailbox0/1/2CompleteCallback`、`HAL_CAN_TxMailbox0/1/2AbortCallback` |
-| `sbus_init` | `HAL_UARTEx_RxEventCallback`、`HAL_UART_ErrorCallback` |
+| CAN の部品 (`can_*`・`robomas_*`・`encoder_can_*` のどれか) を使う | `HAL_CAN_RxFifo0MsgPendingCallback`、`HAL_CAN_TxMailbox0/1/2CompleteCallback`、`HAL_CAN_TxMailbox0/1/2AbortCallback` |
+| SBUS (`sbus_*`) を使う | `HAL_UARTEx_RxEventCallback`、`HAL_UART_ErrorCallback` |
 
 SBUS 以外の UART (Lidar など) の受信やエラーを扱いたいときは、`HAL_UARTEx_RxEventCallback` /
 `HAL_UART_ErrorCallback` の代わりに、次の関数を書いてください。ライブラリが使わない UART の分はここに来ます。
@@ -217,6 +236,9 @@ void lib_error_hook(lib_status_t err, const char *where) {
 ```
 
 CAN が抜けているときは 1ms ごとに呼ばれることがあるので、重い処理は書かないでください。
+`lib_error_hook` は**割り込みの中から呼ばれることもあります** (SBUS のコールバックや、割り込みの中の `can_send`)。
+上の `printf` の例を使うなら、`#include <stdio.h>` と、UART に出すための `_write` の書き換え (retarget) が要ります。
+割り込みの中で長い表示をするとほかの処理が遅れるので、普段は表示せず、調べるときだけ書くのがおすすめです。
 
 「つながっているのに動かない」ときは、`can_dropped_count` (送信で捨てた数)、`sbus_frame_count`
 (受信したフレームの数)、`sbus_error_count` (UART エラーの数) を見ると切り分けられます。
@@ -226,7 +248,9 @@ CAN が抜けているときは 1ms ごとに呼ばれることがあるので�
 1Mbps の CAN で 8 バイトのフレーム 1 つは約 0.13ms です。
 
 - ロボマスは 1 台ごとに 1ms ごとにフィードバックを返すので、**1 台で約 13%** を使います。
-  **1 本の CAN にはおよそ 5 台まで**にし、それより多いときは CAN2 に分けてください
+  それに加えて、指令のフレーム (0x200、ID 5〜8 を使うなら 0x1FF も) を 1ms ごとに送ります。
+  4 台なら フィードバック 4000 + 指令 1000 フレーム/秒で **約 65%**、5 台になると 0x200 と 0x1FF の 2 本が要るので **約 91%** です。
+  **1 本の CAN にはおよそ 4 台まで**にし、それより多いときは CAN2 に分けてください
 - エンコーダーを 6 個 1ms ごとに送ると約 8 割になります。**10ms ごと (約 8%)** がおすすめです
 - 自分で決める ID は、ロボマス (0x1FF〜0x2FF) とぶつからない **0x300 番台**がおすすめです
 

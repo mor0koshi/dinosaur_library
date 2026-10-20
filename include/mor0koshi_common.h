@@ -18,6 +18,7 @@ typedef enum {
  * ライブラリの中で何か失敗するたびに呼ばれる。中身は空 (weak)。
  * 使う側が同じ名前で書けば、printf などで原因が分かる。where は関数名。
  * CAN が抜けているときなどは 1ms ごとに呼ばれることもあるので、重い処理は書かないこと。
+ * 割り込みの中から呼ばれることもある (SBUS のコールバック、割り込みの中の can_send)。
  */
 void lib_error_hook(lib_status_t err, const char *where);
 
