@@ -10,7 +10,9 @@ set(LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/..)
 # ライブラリのソースと HAL の偽物。テストの実行ファイルごとに全部まとめてリンクする
 set(LIB_SOURCES
     ${LIB_DIR}/src/mor0koshi_common.c
+    ${LIB_DIR}/src/mor0koshi_can.c
     ${CMAKE_CURRENT_SOURCE_DIR}/fake/fake_hal.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/fake/fake_can.c
 )
 
 function(add_lib_test name)
@@ -29,3 +31,4 @@ function(add_lib_test name)
 endfunction()
 
 add_lib_test(test_port)
+add_lib_test(test_can)
