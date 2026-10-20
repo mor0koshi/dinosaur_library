@@ -183,6 +183,7 @@ static void test_send_queues_when_mailboxes_full(void) {
     CHECK_EQ(fake.can_sent[4].header.StdId, 0x104);
     fake_can_tx_complete(&hcan1); /* 列が空なら何もしない */
     CHECK_EQ(fake.can_sent_count, 5);
+    CHECK_EQ(fake.primask, 0);
 }
 
 static void test_send_drops_when_queue_full(void) {
@@ -211,6 +212,33 @@ static void test_null_args_do_nothing(void) {
     CHECK_EQ(can_dropped_count(NULL), 0);
 }
 
+static void test_abort_callback_pumps_queue(void) {
+    can_init(&can1, &hcan1);
+    uint8_t d[1];
+    for (int i = 0; i < 4; i++) {
+        d[0] = (uint8_t)i;
+        CHECK_EQ(can_send(&can1, 0x100 + (uint32_t)i, d, 1), LIB_OK);
+    }
+    fake.can_free_mailboxes = 1;
+    HAL_CAN_TxMailbox1AbortCallback(&hcan1);
+    CHECK_EQ(fake.can_sent_count, 4);
+    CHECK_EQ(fake.primask, 0);
+}
+
+static void test_init_fails_when_all_buses_used(void) {
+    static CAN_HandleTypeDef hx1 = {.Instance = CAN1};
+    static CAN_HandleTypeDef hx2 = {.Instance = CAN1};
+    static can_t bx1, bx2;
+
+    /* Fill slots with can1, can2, bx1 */
+    CHECK_EQ(can_init(&can1, &hcan1), LIB_OK);
+    CHECK_EQ(can_init(&can2, &hcan2), LIB_OK);
+    CHECK_EQ(can_init(&bx1, &hx1), LIB_OK);
+    /* 4th should fail */
+    CHECK_EQ(can_init(&bx2, &hx2), LIB_ERR_FULL);
+    CHECK_EQ(fake.last_error, LIB_ERR_FULL);
+}
+
 int main(void) {
     RUN(test_put_get_roundtrip);
     RUN(test_init_configures_hardware);
@@ -226,5 +254,7 @@ int main(void) {
     RUN(test_send_queues_when_mailboxes_full);
     RUN(test_send_drops_when_queue_full);
     RUN(test_null_args_do_nothing);
+    RUN(test_abort_callback_pumps_queue);
+    RUN(test_init_fails_when_all_buses_used);
     return TEST_RESULT();
 }

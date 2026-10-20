@@ -339,10 +339,12 @@ lib_status_t can_send(can_t *bus, uint32_t id, const uint8_t *data, uint8_t len)
 
 /* メールボックスが 1 つ空いたら、列の続きを出す */
 static void on_tx_done(CAN_HandleTypeDef *hcan) {
+    uint32_t pm = port_irq_save(); /* 優先度の高い割り込みから can_send が呼ばれても列が壊れないように */
     can_t *bus = find_bus(hcan);
     if (bus != NULL) {
         tx_pump(bus);
     }
+    port_irq_restore(pm);
 }
 
 void HAL_CAN_TxMailbox0CompleteCallback(CAN_HandleTypeDef *hcan) { on_tx_done(hcan); }
