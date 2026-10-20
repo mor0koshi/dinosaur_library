@@ -276,6 +276,17 @@ static void test_bad_settings_are_rejected(void) {
     CHECK_EQ(sbus_frame_count(NULL), 0);
 }
 
+static void test_restart_failure_is_reported(void) {
+    sbus_init(&sbus, &huart5);
+    fake.uart_rx_ret = HAL_ERROR;
+    HAL_UARTEx_RxEventCallback(&huart5, 25);
+    CHECK_EQ(fake.last_error, LIB_ERR_HAL);
+    fake.error_count = 0;
+    HAL_UART_ErrorCallback(&huart5);
+    CHECK_EQ(fake.error_count, 1);
+    CHECK_EQ(fake.last_error, LIB_ERR_HAL);
+}
+
 int main(void) {
     RUN(test_init_starts_dma);
     RUN(test_init_without_dma_fails);
@@ -292,6 +303,7 @@ int main(void) {
     RUN(test_values_are_zero_when_not_ok);
     RUN(test_error_restarts_rx);
     RUN(test_other_uart_goes_to_hooks);
+    RUN(test_restart_failure_is_reported);
     RUN(test_bad_settings_are_rejected);
     return TEST_RESULT();
 }

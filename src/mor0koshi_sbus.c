@@ -1,5 +1,6 @@
 /*
- * SBUS の受信。
+ * SBUS の受信。2026_B_767 の sbus_handler.c を元にしている (実機確認済みの判定をそのまま使う)。
+ * UART がアイドルになる (1 フレーム受け終わる) たびに、バッファから 0x0F を探して 25 バイトをデコードする。
  */
 #include "mor0koshi_sbus.h"
 
@@ -11,8 +12,9 @@
 
 #define SBUS_FRAME_LEN 25
 #define SBUS_HEADER 0x0FU
-#define SBUS_FLAG_FAILSAFE 0x08U
+#define SBUS_FLAG_FAILSAFE 0x08U /* 受信機が送信機を見失った (フレーム落ち 0x04 は判定に使わない) */
 
+/* HAL のコールバックは huart しかくれないので、どの sbus_t かをここで探す */
 static sbus_t *ports[SBUS_MAX_PORTS];
 
 static sbus_t *find_port(const UART_HandleTypeDef *huart) {
@@ -24,6 +26,7 @@ static sbus_t *find_port(const UART_HandleTypeDef *huart) {
     return NULL;
 }
 
+/* 同じ s か同じ huart が登録済みならそこを上書きし、無ければ空きに入れる。割り込みを止めて呼ぶこと */
 static bool register_port(sbus_t *s) {
     int slot = -1;
     for (int i = 0; i < SBUS_MAX_PORTS && slot < 0; i++) {
@@ -43,9 +46,10 @@ static bool register_port(sbus_t *s) {
     return true;
 }
 
+/* DMA で受信を (再) 開始する。DMA は Normal モードなので、1 回受信するたびに呼び直す */
 static HAL_StatusTypeDef start_rx(sbus_t *s) {
     HAL_StatusTypeDef st = HAL_UARTEx_ReceiveToIdle_DMA(s->huart, s->rxbuf, SBUS_RXBUF_LEN);
-    __HAL_DMA_DISABLE_IT(s->huart->hdmarx, DMA_IT_HT);
+    __HAL_DMA_DISABLE_IT(s->huart->hdmarx, DMA_IT_HT); /* 半分受信の割り込みは要らない */
     return st;
 }
 
@@ -54,7 +58,7 @@ lib_status_t sbus_init(sbus_t *s, UART_HandleTypeDef *huart) {
         return port_fail(LIB_ERR_PARAM, "sbus_init");
     }
     if (huart->hdmarx == NULL) {
-        return port_fail(LIB_ERR_IRQ_OFF, "sbus_init");
+        return port_fail(LIB_ERR_IRQ_OFF, "sbus_init"); /* CubeMX で RX の DMA が設定されていない */
     }
     uint32_t pm = port_irq_save();
     memset(s, 0, sizeof *s);
@@ -74,6 +78,7 @@ lib_status_t sbus_init(sbus_t *s, UART_HandleTypeDef *huart) {
     return LIB_OK;
 }
 
+/* 25 バイト (先頭 0x0F) を 11bit × 16ch とフラグにデコードする (受信割り込みの中) */
 static void decode(sbus_t *s, const uint8_t *f) {
     uint32_t bits = 0;
     int nbits = 0;
@@ -88,7 +93,12 @@ static void decode(sbus_t *s, const uint8_t *f) {
         }
     }
     s->isr_flags = f[23];
-    s->isr_rx_ms = HAL_GetTick();
+    /*
+     * 受信が途絶えたことを sbus_update が判定できるように時刻を残す。
+     * チャンネルの値はフレームが来たときしか変わらないので、コネクタが抜けると
+     * 古い値のまま固まり、それだけでは断線を判定できない。
+     */
+    s->isr_rx_ms = HAL_GetTick(); /* isr_received より先に書く */
     s->isr_received = true;
     s->frame_count++;
 }
@@ -100,6 +110,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
         return;
     }
 #if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)
+    /* D キャッシュが有効だと、DMA が書いた新しい値ではなくキャッシュの古い値を読んでしまう */
     if ((SCB->CCR & SCB_CCR_DC_Msk) != 0U) {
         SCB_InvalidateDCache_by_Addr((uint32_t *)(void *)s->rxbuf, SBUS_RXBUF_LEN);
     }
@@ -110,9 +121,17 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
             break;
         }
     }
-    start_rx(s);
+    /* 受信をかけ直せないと、それ以降ずっと受信が止まるので知らせる */
+    if (start_rx(s) != HAL_OK) {
+        lib_error_hook(LIB_ERR_HAL, "HAL_UARTEx_RxEventCallback");
+    }
 }
 
+/*
+ * UART の受信エラー (パリティ・フレーミング・ノイズ・オーバーラン) で呼ばれる。
+ * DMA 受信中にエラーが起きると HAL は受信を打ち切り、RxEventCallback も呼ばない。
+ * ここで再開しないと、リセットするまで受信が止まったままになる。
+ */
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
     sbus_t *s = find_port(huart);
     if (s == NULL) {
@@ -120,7 +139,10 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
         return;
     }
     s->error_count++;
-    start_rx(s);
+    /* 受信をかけ直せないと、それ以降ずっと受信が止まるので知らせる */
+    if (start_rx(s) != HAL_OK) {
+        lib_error_hook(LIB_ERR_HAL, "HAL_UART_ErrorCallback");
+    }
 }
 
 __attribute__((weak)) void uart_rx_event_hook(UART_HandleTypeDef *huart, uint16_t size) {
@@ -136,6 +158,7 @@ void sbus_update(sbus_t *s) {
     if (s == NULL) {
         return;
     }
+    /* 途中で受信割り込みが入って別のフレームの値が混ざらないよう、まとめて写す */
     uint32_t pm = port_irq_save();
     for (int i = 0; i < SBUS_CHANNELS; i++) {
         s->ch[i] = s->isr_ch[i];
@@ -161,6 +184,7 @@ int sbus_stick(const sbus_t *s, int ch) {
     if (d >= -s->deadband && d <= s->deadband) {
         return 0;
     }
+    /* 中立の上下で別々に変換する (上下で幅が違う送信機でも、中立が 0 になるように) */
     int span = d > 0 ? s->stick_max - s->stick_center : s->stick_center - s->stick_min;
     long v = (long)d * 1000L / span;
     if (v > 1000L) {
@@ -220,4 +244,4 @@ void sbus_set_deadband(sbus_t *s, int deadband) {
 uint32_t sbus_frame_count(const sbus_t *s) { return s == NULL ? 0U : s->frame_count; }
 uint32_t sbus_error_count(const sbus_t *s) { return s == NULL ? 0U : s->error_count; }
 
-#endif
+#endif /* HAL_UART_MODULE_ENABLED */
