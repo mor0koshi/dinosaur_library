@@ -12,6 +12,7 @@ add_library(mor0koshi_library STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/mor0koshi_common.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/mor0koshi_can.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/mor0koshi_sbus.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/mor0koshi_encoder.c
 )
 target_include_directories(mor0koshi_library
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include

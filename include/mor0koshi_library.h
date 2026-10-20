@@ -4,5 +4,6 @@
 #include "mor0koshi_common.h"
 #include "mor0koshi_can.h"
 #include "mor0koshi_sbus.h"
+#include "mor0koshi_encoder.h"
 
 #endif

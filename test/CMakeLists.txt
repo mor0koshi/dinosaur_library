@@ -12,6 +12,7 @@ set(LIB_SOURCES
     ${LIB_DIR}/src/mor0koshi_common.c
     ${LIB_DIR}/src/mor0koshi_can.c
     ${LIB_DIR}/src/mor0koshi_sbus.c
+    ${LIB_DIR}/src/mor0koshi_encoder.c
     ${CMAKE_CURRENT_SOURCE_DIR}/fake/fake_hal.c
     ${CMAKE_CURRENT_SOURCE_DIR}/fake/fake_can.c
 )
@@ -34,3 +35,4 @@ endfunction()
 add_lib_test(test_port)
 add_lib_test(test_can)
 add_lib_test(test_sbus)
+add_lib_test(test_encoder)

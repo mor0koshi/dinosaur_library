@@ -26,4 +26,18 @@ static inline lib_status_t port_fail(lib_status_t err, const char *where) {
     return err;
 }
 
+/* DWT のサイクルカウンタを動かす (エンコーダーの rpm で、update を呼んだ間隔を測るのに使う) */
+static inline void port_cycles_enable(void) {
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+#if defined(__CORTEX_M) && (__CORTEX_M == 7U)
+    DWT->LAR = 0xC5ACCE55U; /* M7 はロックを外さないと書けない */
+#endif
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+/* CPU のクロックで 1 ずつ増える。216MHz なら約 19.8 秒で一周する */
+static inline uint32_t port_cycles(void) {
+    return DWT->CYCCNT;
+}
+
 #endif
