@@ -109,24 +109,31 @@ void robomas_set_current(robomas_motor_t *m, int16_t current) {
     if (m == NULL) {
         return;
     }
+    /* 種類と目標を一緒に書く。間に robomas_update (タイマー割り込み) が入ると、前の目標が新しい種類で使われる */
+    uint32_t pm = port_irq_save();
     set_mode(m, ROBOMAS_MODE_CURRENT);
     m->target = (float)current;
+    port_irq_restore(pm);
 }
 
 void robomas_set_rpm(robomas_motor_t *m, float rpm) {
     if (m == NULL) {
         return;
     }
+    uint32_t pm = port_irq_save();
     set_mode(m, ROBOMAS_MODE_SPEED);
     m->target = rpm;
+    port_irq_restore(pm);
 }
 
 void robomas_set_angle(robomas_motor_t *m, float deg) {
     if (m == NULL) {
         return;
     }
+    uint32_t pm = port_irq_save();
     set_mode(m, ROBOMAS_MODE_ANGLE);
     m->target = deg;
+    port_irq_restore(pm);
 }
 
 bool robomas_ok(const robomas_motor_t *m) {
@@ -212,6 +219,7 @@ static float speed_pi(robomas_motor_t *m, float out_rpm) {
     return m->speed_kp * err + m->speed_ki * m->integral;
 }
 
+/* 1 台分の電流指令を計算する。mode・target・integral を読み書きするので、割り込みを止めて呼ぶこと */
 static int16_t compute(robomas_motor_t *m) {
     if (!robomas_ok(m)) {
         /* フィードバックが無いのに積分がたまり続けると、復帰した瞬間に暴れる */
@@ -248,6 +256,8 @@ lib_status_t robomas_update(robomas_t *rm) {
     uint8_t high[8] = {0};
     bool use_low = false;
     bool use_high = false;
+    /* 全モーターの計算を 1 回の割り込み禁止で行う (set_* と同時に走っても、種類と目標が食い違わない) */
+    uint32_t pm = port_irq_save();
     for (int i = 0; i < ROBOMAS_MAX_MOTORS; i++) {
         robomas_motor_t *m = &rm->motors[i];
         if (!m->used) {
@@ -262,6 +272,7 @@ lib_status_t robomas_update(robomas_t *rm) {
             use_high = true;
         }
     }
+    port_irq_restore(pm); /* can_send は自分で割り込みを止めるので、送る前に戻す */
     lib_status_t st = LIB_OK;
     if (use_low) {
         st = can_send(rm->bus, ROBOMAS_CMD_LOW, low, 8);
@@ -282,9 +293,11 @@ void robomas_stop_all(robomas_t *rm) {
     for (int i = 0; i < ROBOMAS_MAX_MOTORS; i++) {
         robomas_motor_t *m = &rm->motors[i];
         if (m->used) {
+            uint32_t pm = port_irq_save(); /* 1 台ずつ止める (割り込みを止める時間を短く保つ) */
             m->mode = ROBOMAS_MODE_CURRENT;
             m->target = 0.0f;
             m->integral = 0.0f;
+            port_irq_restore(pm);
         }
     }
 }

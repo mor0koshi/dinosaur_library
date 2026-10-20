@@ -259,6 +259,45 @@ static void test_stop_all(void) {
     CHECK_EQ(sent_current(1, 5), 0);
 }
 
+/* 指令の書き込みは割り込みを止めて行う (robomas_update が割り込みで動いても、途中の状態を読まれない) */
+static void test_commands_lock_irq(void) {
+    setup();
+    robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M3508, 1);
+    int before = fake.irq_disable_calls;
+    robomas_set_current(m, 100);
+    CHECK(fake.irq_disable_calls > before);
+    CHECK_EQ(fake.primask, 0);
+    before = fake.irq_disable_calls;
+    robomas_set_rpm(m, 10.0f);
+    CHECK(fake.irq_disable_calls > before);
+    CHECK_EQ(fake.primask, 0);
+    before = fake.irq_disable_calls;
+    robomas_set_angle(m, 10.0f);
+    CHECK(fake.irq_disable_calls > before);
+    CHECK_EQ(fake.primask, 0);
+    before = fake.irq_disable_calls;
+    robomas_stop_all(&rm);
+    CHECK(fake.irq_disable_calls > before);
+    CHECK_EQ(fake.primask, 0);
+}
+
+/* robomas_update は全モーターの計算を割り込みを止めて行い、送る前に元に戻す */
+static void test_update_locks_irq_and_restores(void) {
+    setup();
+    robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M3508, 1);
+    feedback(1, 0, 0, 0, 0);
+    robomas_set_rpm(m, 10.0f);
+    uint8_t zero[8] = {0};
+    int before = fake.irq_disable_calls;
+    can_send(&can1, 0x200, zero, 8); /* can_send 単独で止める回数 */
+    int send_only = fake.irq_disable_calls - before;
+    before = fake.irq_disable_calls;
+    robomas_update(&rm);
+    CHECK(fake.irq_disable_calls - before > send_only); /* 計算の分の止めが加わっている */
+    CHECK_EQ(fake.primask, 0);
+    CHECK_EQ(fake.can_sent_count, 2);
+}
+
 static void test_bad_settings_and_null(void) {
     setup();
     robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
@@ -294,6 +333,8 @@ int main(void) {
     RUN(test_mode_change_resets_integral);
     RUN(test_lost_feedback_outputs_zero_and_resets_integral);
     RUN(test_stop_all);
+    RUN(test_commands_lock_irq);
+    RUN(test_update_locks_irq_and_restores);
     RUN(test_bad_settings_and_null);
     return TEST_RESULT();
 }

@@ -15,6 +15,7 @@ typedef struct {
 typedef struct {
     uint32_t tick;              /* HAL_GetTick の戻り値 */
     uint32_t primask;           /* 1 = 割り込み禁止中 */
+    int irq_disable_calls;      /* __disable_irq が呼ばれた回数 (割り込みを止めて書いたかの確認用) */
     uint8_t nvic_enabled[128];  /* NVIC_GetEnableIRQ の戻り値 (fake_reset で全部 1) */
 
     /* CAN */

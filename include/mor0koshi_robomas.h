@@ -7,10 +7,12 @@
  *   robomas_init(&rm, &can1);
  *   robomas_motor_t *wheel = robomas_add(&rm, ROBOMAS_M3508, 1);  // 種類と ESC の ID (1〜8)
  *   robomas_set_rpm(wheel, 300.0f);                            // 出力軸 rpm
- *   // 1ms ごとに 1 回
+ *   // 1ms ごとに 1 回 (メインループでも、タイマー割り込みの中でもよい)
  *   robomas_update(&rm);
  *
  * 使う側に見える値は全部「出力軸」(ギアの先)。ギア比は種類から自動で入る。
+ * robomas_update をタイマー割り込みで呼んでも、メインループの robomas_set_* / robomas_stop_all と同時に動いて大丈夫
+ * (指令の書き込みと update の計算は、割り込みを止めて行う)。
  * ゲインは 1ms ごとに robomas_update を呼ぶ前提。M3508 と位置制御の初期ゲインは仮の値なので実機で調整すること。
  * ロボマスは 1 台で 1Mbps の CAN の約 13% を使う。1 本の CAN には 5 台くらいまでにする。
  */

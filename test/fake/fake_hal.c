@@ -34,7 +34,10 @@ uint32_t HAL_GetTick(void) { return fake.tick; }
 uint32_t NVIC_GetEnableIRQ(IRQn_Type IRQn) { return fake.nvic_enabled[IRQn]; }
 uint32_t __get_PRIMASK(void) { return fake.primask; }
 void __set_PRIMASK(uint32_t priMask) { fake.primask = priMask; }
-void __disable_irq(void) { fake.primask = 1; }
+void __disable_irq(void) {
+    fake.primask = 1;
+    fake.irq_disable_calls++;
+}
 void __enable_irq(void) { fake.primask = 0; }
 
 HAL_StatusTypeDef HAL_CAN_ConfigFilter(CAN_HandleTypeDef *hcan, const CAN_FilterTypeDef *sFilterConfig) {
