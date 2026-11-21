@@ -200,7 +200,7 @@ static void test_integral_is_limited(void) {
     setup();
     robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
     feedback(1, 0, 0, 0, 0);
-    robomas_set_speed_gain(m, 0.0f, 1.0f, 5000.0f); /* 積分だけ */
+    robomas_set_speed_pid(m, 0.0f, 1.0f, 0.0f); /* 積分だけ */
     robomas_set_rpm(m, 100.0f);                     /* ローター 3600rpm。誤差 3600 */
     update_next_ms();
     CHECK_EQ(sent_current(0, 1), 3600);
@@ -212,8 +212,8 @@ static void test_angle_mode(void) {
     setup();
     robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
     robomas_set_gear_ratio(m, 1.0f);
-    robomas_set_speed_gain(m, 1.0f, 0.0f, 5000.0f); /* P だけ */
-    robomas_set_angle_gain(m, 2.0f, 100.0f);
+    robomas_set_speed_pid(m, 1.0f, 0.0f, 0.0f); /* P だけ */
+    robomas_set_angle_pid(m, 2.0f, 0.0f, 0.0f);
     feedback(1, 0, 0, 0, 0);
     robomas_set_angle(m, 10.0f); /* 誤差 10 度 → 目標 20rpm → 電流 20 */
     update_next_ms();
@@ -229,7 +229,7 @@ static void test_angle_mode(void) {
 static void test_mode_change_resets_integral(void) {
     setup();
     robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
-    robomas_set_speed_gain(m, 0.0f, 1.0f, 5000.0f);
+    robomas_set_speed_pid(m, 0.0f, 1.0f, 0.0f);
     feedback(1, 0, 0, 0, 0);
     robomas_set_rpm(m, 10.0f); /* 誤差 360 */
     update_next_ms();          /* 積分 360 */
@@ -242,7 +242,7 @@ static void test_mode_change_resets_integral(void) {
 static void test_lost_feedback_outputs_zero_and_resets_integral(void) {
     setup();
     robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
-    robomas_set_speed_gain(m, 0.0f, 1.0f, 5000.0f);
+    robomas_set_speed_pid(m, 0.0f, 1.0f, 0.0f);
     feedback(1, 0, 0, 0, 0);
     robomas_set_rpm(m, 10.0f);
     update_next_ms(); /* 積分 360 */
@@ -289,10 +289,10 @@ static void test_commands_lock_irq(void) {
     CHECK(fake.irq_disable_calls > before);
     CHECK_EQ(fake.primask, 0);
     before = fake.irq_disable_calls;
-    robomas_set_speed_gain(m, 1.0f, 0.1f, 1000.0f);
+    robomas_set_speed_i_limit(m, 1000.0f);
     CHECK(fake.irq_disable_calls > before);
     before = fake.irq_disable_calls;
-    robomas_set_angle_gain(m, 1.0f, 50.0f);
+    robomas_set_angle_max_rpm(m, 50.0f);
     CHECK(fake.irq_disable_calls > before);
     before = fake.irq_disable_calls;
     robomas_set_gear_ratio(m, 10.0f);
@@ -302,6 +302,12 @@ static void test_commands_lock_irq(void) {
     CHECK(fake.irq_disable_calls > before);
     before = fake.irq_disable_calls;
     robomas_set_accel_limit(m, 100.0f);
+    CHECK(fake.irq_disable_calls > before);
+    before = fake.irq_disable_calls;
+    robomas_set_speed_pid(m, 1.0f, 0.1f, 0.0f);
+    CHECK(fake.irq_disable_calls > before);
+    before = fake.irq_disable_calls;
+    robomas_set_angle_pid(m, 1.0f, 0.0f, 0.0f);
     CHECK(fake.irq_disable_calls > before);
     CHECK_EQ(fake.primask, 0);
 }
@@ -330,7 +336,7 @@ static void test_update_locks_irq_and_restores(void) {
 static void test_update_runs_at_most_once_per_ms(void) {
     setup();
     robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
-    robomas_set_speed_gain(m, 0.0f, 1.0f, 5000.0f); /* 積分だけ */
+    robomas_set_speed_pid(m, 0.0f, 1.0f, 0.0f); /* 積分だけ */
     feedback(1, 0, 0, 0, 0);
     robomas_set_rpm(m, 10.0f); /* 誤差 360 */
     fake.tick = 5;
@@ -409,7 +415,7 @@ static void test_accel_limit_ramps_target(void) {
     setup();
     robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
     robomas_set_gear_ratio(m, 1.0f);
-    robomas_set_speed_gain(m, 1.0f, 0.0f, 5000.0f); /* P だけ。出力 = 目標 - 今の rpm */
+    robomas_set_speed_pid(m, 1.0f, 0.0f, 0.0f); /* P だけ。出力 = 目標 - 今の rpm */
     robomas_set_accel_limit(m, 1000.0f);            /* 1 秒で 1000rpm = 1ms で 1rpm */
     feedback(1, 0, 0, 0, 0);
     robomas_set_rpm(m, 3.0f);
@@ -431,7 +437,7 @@ static void test_accel_limit_starts_from_measured_speed(void) {
     setup();
     robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
     robomas_set_gear_ratio(m, 1.0f);
-    robomas_set_speed_gain(m, 1.0f, 0.0f, 5000.0f);
+    robomas_set_speed_pid(m, 1.0f, 0.0f, 0.0f);
     robomas_set_accel_limit(m, 1000.0f);
     feedback(1, 0, 500, 0, 0); /* 500rpm で回っている */
     robomas_set_current(m, 800);
@@ -446,7 +452,7 @@ static void test_accel_limit_restarts_after_lost_feedback(void) {
     setup();
     robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
     robomas_set_gear_ratio(m, 1.0f);
-    robomas_set_speed_gain(m, 1.0f, 0.0f, 5000.0f);
+    robomas_set_speed_pid(m, 1.0f, 0.0f, 0.0f);
     robomas_set_accel_limit(m, 1000.0f);
     feedback(1, 0, 0, 0, 0);
     robomas_set_rpm(m, 100.0f);
@@ -466,7 +472,7 @@ static void test_stop_all_ignores_accel_limit(void) {
     setup();
     robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
     robomas_set_gear_ratio(m, 1.0f);
-    robomas_set_speed_gain(m, 1.0f, 0.0f, 5000.0f);
+    robomas_set_speed_pid(m, 1.0f, 0.0f, 0.0f);
     feedback(1, 0, 0, 0, 0);
     robomas_set_rpm(m, 300.0f);
     update_next_ms();
@@ -477,13 +483,13 @@ static void test_stop_all_ignores_accel_limit(void) {
     CHECK_EQ(sent_current(1, 1), 0);
 }
 
-/* 加速度の上限は速度制御 (robomas_set_rpm) だけに効く。位置制御は今までどおり (上限の rpm で頭打ち) */
+/* 加速度の上限は速度制御 (robomas_set_rpm) だけに効く。位置制御は今までどおり (最高 rpm で頭打ち) */
 static void test_accel_limit_does_not_change_angle_mode(void) {
     setup();
     robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
     robomas_set_gear_ratio(m, 1.0f);
-    robomas_set_speed_gain(m, 1.0f, 0.0f, 5000.0f);
-    robomas_set_angle_gain(m, 2.0f, 100.0f);
+    robomas_set_speed_pid(m, 1.0f, 0.0f, 0.0f);
+    robomas_set_angle_pid(m, 2.0f, 0.0f, 0.0f);
     robomas_set_accel_limit(m, 1000.0f);
     feedback(1, 0, 0, 0, 0);
     robomas_set_angle(m, 10.0f);
@@ -495,7 +501,7 @@ static void test_accel_limit_rejects_bad_values(void) {
     setup();
     robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
     robomas_set_gear_ratio(m, 1.0f);
-    robomas_set_speed_gain(m, 1.0f, 0.0f, 5000.0f);
+    robomas_set_speed_pid(m, 1.0f, 0.0f, 0.0f);
     feedback(1, 0, 0, 0, 0);
     robomas_set_accel_limit(m, -1.0f);
     CHECK_EQ(fake.last_error, LIB_ERR_PARAM);
@@ -504,6 +510,174 @@ static void test_accel_limit_rejects_bad_values(void) {
     robomas_set_rpm(m, 50.0f);
     update_next_ms();
     CHECK_EQ(sent_current(0, 1), 50); /* 初期値は上限なし (すぐ目標) のまま */
+}
+
+/* 速度の D: 今の回転数の変化 (1ms あたり) に kd を掛けて、変化を打ち消す向きに出す */
+static void test_speed_kd(void) {
+    setup();
+    robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
+    robomas_set_gear_ratio(m, 1.0f);
+    robomas_set_speed_pid(m, 0.0f, 0.0f, 1.0f); /* D だけ */
+    feedback(1, 0, 0, 0, 0);
+    robomas_set_rpm(m, 10.0f);
+    update_next_ms();
+    CHECK_EQ(sent_current(0, 1), 0); /* 始めた瞬間は変化 0 */
+    feedback(1, 0, 5, 0, 0);         /* 1ms で 5rpm 上がった */
+    update_next_ms();
+    CHECK_EQ(sent_current(1, 1), -5);
+    update_next_ms();
+    CHECK_EQ(sent_current(2, 1), 0); /* 変化しなければ 0 */
+    robomas_set_rpm(m, 1000.0f);     /* 目標を急に変えても、D は飛び出さない */
+    update_next_ms();
+    CHECK_EQ(sent_current(3, 1), 0);
+}
+
+/* 積分の上限は robomas_set_speed_i_limit で決める。robomas_set_speed_pid は kp・ki・kd だけ変える (上限はそのまま) */
+static void test_speed_pid_keeps_i_limit(void) {
+    setup();
+    robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
+    robomas_set_gear_ratio(m, 1.0f);
+    robomas_set_speed_i_limit(m, 100.0f);
+    robomas_set_speed_pid(m, 0.0f, 1.0f, 0.0f);
+    feedback(1, 0, 0, 0, 0);
+    robomas_set_rpm(m, 3600.0f);
+    update_next_ms();
+    CHECK_EQ(sent_current(0, 1), 100); /* 積分は 100 で頭打ちのまま */
+}
+
+/* robomas_set_speed_i_limit は積分の上限だけ変える (ゲインはそのまま) */
+static void test_speed_i_limit_keeps_gains(void) {
+    setup();
+    robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
+    robomas_set_gear_ratio(m, 1.0f);
+    robomas_set_speed_pid(m, 0.0f, 0.0f, 1.0f);
+    robomas_set_speed_i_limit(m, 5000.0f);
+    feedback(1, 0, 0, 0, 0);
+    robomas_set_rpm(m, 10.0f);
+    update_next_ms();
+    feedback(1, 0, 5, 0, 0);
+    update_next_ms();
+    CHECK_EQ(sent_current(1, 1), -5);
+}
+
+/* 角度の I: 角度の差を足していき、目標 rpm に加える。I の分は最高 rpm を超えない */
+static void test_angle_ki(void) {
+    setup();
+    robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
+    robomas_set_gear_ratio(m, 1.0f);
+    robomas_set_speed_pid(m, 1.0f, 0.0f, 0.0f); /* 速度は P = 1 だけ。出力 = 目標 rpm */
+    robomas_set_angle_max_rpm(m, 15.0f);            /* 最高 15rpm */
+    robomas_set_angle_pid(m, 0.0f, 1.0f, 0.0f);     /* 角度は I だけ */
+    feedback(1, 0, 0, 0, 0);
+    robomas_set_angle(m, 10.0f); /* 差 10 度 */
+    update_next_ms();
+    CHECK_EQ(sent_current(0, 1), 10);
+    update_next_ms();
+    CHECK_EQ(sent_current(1, 1), 15); /* 20 になるが、最高 15rpm で頭打ち */
+    update_next_ms();
+    CHECK_EQ(sent_current(2, 1), 15);
+    robomas_set_angle(m, -10.0f); /* I は 15 で止まっていたので、15 - 10 = 5 */
+    update_next_ms();
+    CHECK_EQ(sent_current(3, 1), 5);
+}
+
+/* 角度の D: 今の角度の変化 (1ms あたり) に kd を掛けて、変化を打ち消す向きに出す */
+static void test_angle_kd(void) {
+    setup();
+    robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
+    robomas_set_gear_ratio(m, 1.0f);
+    robomas_set_speed_pid(m, 1.0f, 0.0f, 0.0f);
+    robomas_set_angle_max_rpm(m, 1000.0f);
+    robomas_set_angle_pid(m, 0.0f, 0.0f, 1.0f); /* 角度は D だけ */
+    feedback(1, 0, 0, 0, 0);
+    robomas_set_angle(m, 0.0f);
+    update_next_ms();
+    CHECK_EQ(sent_current(0, 1), 0);
+    feedback(1, 2048, 0, 0, 0); /* 1ms で 90 度進んだ */
+    update_next_ms();
+    CHECK_EQ(sent_current(1, 1), -90);
+    update_next_ms();
+    CHECK_EQ(sent_current(2, 1), 0);
+    robomas_reset_angle(m); /* 原点を取り直しても、D は飛び出さない */
+    update_next_ms();
+    CHECK_EQ(sent_current(3, 1), 0);
+}
+
+/* 種類を変えたら角度の I も捨てる */
+static void test_mode_change_resets_angle_i(void) {
+    setup();
+    robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
+    robomas_set_gear_ratio(m, 1.0f);
+    robomas_set_speed_pid(m, 1.0f, 0.0f, 0.0f);
+    robomas_set_angle_max_rpm(m, 100.0f);
+    robomas_set_angle_pid(m, 0.0f, 1.0f, 0.0f);
+    feedback(1, 0, 0, 0, 0);
+    robomas_set_angle(m, 10.0f);
+    update_next_ms(); /* I は 10 */
+    robomas_set_current(m, 0);
+    robomas_set_angle(m, 10.0f);
+    update_next_ms();
+    CHECK_EQ(sent_current(1, 1), 10); /* 0 からやり直しなので 20 にはならない */
+}
+
+static void test_pid_rejects_bad_values(void) {
+    setup();
+    robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
+    robomas_set_gear_ratio(m, 1.0f);
+    robomas_set_speed_pid(m, 1.0f, 0.0f, 0.0f);
+    robomas_set_speed_pid(m, -1.0f, 0.0f, 0.0f); /* マイナスは間違い (逆に効いて暴れる) */
+    CHECK_EQ(fake.last_error, LIB_ERR_PARAM);
+    CHECK(strcmp(fake.last_where, "robomas_set_speed_pid") == 0);
+    robomas_set_speed_pid(m, 1.0f, -1.0f, 0.0f);
+    robomas_set_speed_pid(m, 1.0f, 0.0f, -1.0f);
+    robomas_set_angle_pid(m, -1.0f, 0.0f, 0.0f);
+    CHECK(strcmp(fake.last_where, "robomas_set_angle_pid") == 0);
+    robomas_set_angle_pid(m, 1.0f, -1.0f, 0.0f);
+    robomas_set_angle_pid(m, 1.0f, 0.0f, -1.0f);
+    CHECK_EQ(fake.error_count, 6);
+    robomas_set_speed_pid(NULL, 1.0f, 0.0f, 0.0f);
+    robomas_set_angle_pid(NULL, 1.0f, 0.0f, 0.0f);
+    feedback(1, 0, 0, 0, 0);
+    robomas_set_rpm(m, 10.0f);
+    update_next_ms();
+    CHECK_EQ(sent_current(0, 1), 10); /* 変わっていない (kp 1) */
+}
+
+/* 角度制御のときの最高 rpm は robomas_set_angle_max_rpm で決める (ゲインはそのまま) */
+static void test_angle_max_rpm(void) {
+    setup();
+    robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
+    robomas_set_gear_ratio(m, 1.0f);
+    robomas_set_speed_pid(m, 1.0f, 0.0f, 0.0f);
+    robomas_set_angle_max_rpm(m, 50.0f);
+    feedback(1, 0, 0, 0, 0);
+    robomas_set_angle(m, 360.0f); /* 2.0 × 360 = 720rpm だが 50rpm で頭打ち */
+    update_next_ms();
+    CHECK_EQ(sent_current(0, 1), 50);
+    robomas_set_angle(m, 10.0f); /* kp は初期値の 2.0 のまま: 20rpm */
+    update_next_ms();
+    CHECK_EQ(sent_current(1, 1), 20);
+}
+
+static void test_limits_reject_bad_values(void) {
+    setup();
+    robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
+    robomas_set_gear_ratio(m, 1.0f);
+    robomas_set_speed_i_limit(m, -1.0f);
+    CHECK_EQ(fake.last_error, LIB_ERR_PARAM);
+    CHECK(strcmp(fake.last_where, "robomas_set_speed_i_limit") == 0);
+    robomas_set_angle_max_rpm(m, -1.0f);
+    CHECK(strcmp(fake.last_where, "robomas_set_angle_max_rpm") == 0);
+    robomas_set_speed_i_limit(m, NAN);
+    robomas_set_angle_max_rpm(m, NAN);
+    CHECK_EQ(fake.error_count, 4);
+    robomas_set_speed_i_limit(NULL, 100.0f);
+    robomas_set_angle_max_rpm(NULL, 100.0f);
+    robomas_set_speed_pid(m, 1.0f, 0.0f, 0.0f);
+    feedback(1, 0, 0, 0, 0);
+    robomas_set_angle(m, 360.0f);
+    update_next_ms();
+    CHECK_EQ(sent_current(0, 1), 100); /* 最高 rpm は初期値の 100 のまま */
 }
 
 static void test_bad_settings_and_null(void) {
@@ -554,6 +728,15 @@ int main(void) {
     RUN(test_stop_all_ignores_accel_limit);
     RUN(test_accel_limit_does_not_change_angle_mode);
     RUN(test_accel_limit_rejects_bad_values);
+    RUN(test_speed_kd);
+    RUN(test_speed_pid_keeps_i_limit);
+    RUN(test_speed_i_limit_keeps_gains);
+    RUN(test_angle_ki);
+    RUN(test_angle_kd);
+    RUN(test_mode_change_resets_angle_i);
+    RUN(test_pid_rejects_bad_values);
+    RUN(test_angle_max_rpm);
+    RUN(test_limits_reject_bad_values);
     RUN(test_bad_settings_and_null);
     return TEST_RESULT();
 }

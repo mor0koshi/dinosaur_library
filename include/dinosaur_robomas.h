@@ -13,7 +13,8 @@
  * 使う側に見える値は全部「出力軸」(ギアの先)。ギア比は種類から自動で入る。
  * robomas_update をタイマー割り込みで呼んでも、メインループの robomas_set_* / robomas_stop_all と同時に動いて大丈夫
  * (指令・調整の書き込みと update の計算は、割り込みを止めて行う)。
- * ゲインは 1ms ごとに robomas_update を呼ぶ前提。M3508 と位置制御の初期ゲインは仮の値なので実機で調整すること。
+ * 速度・角度とも PID (初期値は速度 PI・角度 P)。ゲインは 1ms ごとに robomas_update を呼ぶ前提。
+ * M3508 と位置制御の初期ゲインは仮の値なので実機で調整すること。
  * ロボマスは 1 台で 1Mbps の CAN の約 13% を使い、指令のフレームも 1ms ごとに送る (4 台で約 65%、5 台で約 91%)。
  * 1 本の CAN には 4 台くらいまでにする。
  * CAN の断線や ESC の電源断のあいだの回転は数えられないので、そのあとは robomas_reset_angle で原点を取り直す。
@@ -52,15 +53,21 @@ typedef struct robomas_motor {
     int16_t current_limit; /* 送る電流の上限 (初期値は種類ごとの最大) */
     float speed_kp;
     float speed_ki;
+    float speed_kd;
     float speed_i_limit;
     float angle_kp;
+    float angle_ki;
+    float angle_kd;
     float angle_max_rpm;
     float accel_limit; /* 速度制御の目標の変化の上限 [出力軸 rpm/s]。0 = 上限なし */
     float ramp_rpm;    /* 加速度の上限をかけたあとの、今の目標 [出力軸 rpm] */
-    bool ramp_reset;   /* 次の計算で、ramp_rpm を今の回転数から始め直す */
+    bool restart;      /* 次の計算で、ramp_rpm と D の前回の値を今の値から始め直す */
     robomas_mode_t mode;
-    float target;   /* 電流: 生の値 / 速度: 出力軸 rpm / 位置: 出力軸の角度 [度] */
-    float integral; /* 速度 PI の積分 (ローター rpm の誤差の和) */
+    float target;         /* 電流: 生の値 / 速度: 出力軸 rpm / 位置: 出力軸の角度 [度] */
+    float integral;       /* 速度 PID の積分 (ローター rpm の誤差の和) */
+    float angle_iterm;    /* 角度 PID の I の分 [出力軸 rpm] (±angle_max_rpm で頭打ち) */
+    float prev_rotor_rpm; /* 前回の計算のときのローター rpm (速度の D 用) */
+    float prev_angle;     /* 前回の計算のときの出力軸の角度 [度] (角度の D 用) */
     int16_t output; /* 最後に送った電流指令 */
     /* 受信割り込みが書く */
     volatile bool fb_started;
@@ -104,9 +111,20 @@ int16_t robomas_current(const robomas_motor_t *m); /* 実電流 (生の値) */
 int robomas_temp(const robomas_motor_t *m);        /* 温度 ℃ (M3508 のみ。M2006 は 0) */
 bool robomas_ok(const robomas_motor_t *m);         /* フィードバックが 100ms 以内に届いているか */
 
+/*
+ * 調整。どれも名前に出てくる値だけを変える (たとえば robomas_set_speed_pid は積分の上限を変えない)。
+ * ゲインは 1ms ごとに robomas_update を呼ぶ前提。D は目標ではなく今の値の変化 (1ms あたり) にかける
+ * (目標を急に変えても D が飛び出さない)
+ */
 void robomas_set_gear_ratio(robomas_motor_t *m, float ratio);
-void robomas_set_speed_gain(robomas_motor_t *m, float kp, float ki, float i_limit);
-void robomas_set_angle_gain(robomas_motor_t *m, float kp, float max_rpm);
+/* 速度 PID の kp・ki・kd (どれも 0 以上)。初期値 1.5 / 0.08 / 0 */
+void robomas_set_speed_pid(robomas_motor_t *m, float kp, float ki, float kd);
+/* 速度 PID の積分の上限 (ローター rpm の誤差の和。0 以上)。初期値 5000 */
+void robomas_set_speed_i_limit(robomas_motor_t *m, float i_limit);
+/* 角度 PID の kp・ki・kd (どれも 0 以上)。初期値 2.0 / 0 / 0。I の分は最高 rpm を超えない */
+void robomas_set_angle_pid(robomas_motor_t *m, float kp, float ki, float kd);
+/* 角度制御のときの最高回転数 [出力軸 rpm] (0 以上)。初期値 100 */
+void robomas_set_angle_max_rpm(robomas_motor_t *m, float max_rpm);
 /*
  * 送る電流の上限 (生の値。M3508 は 0〜16384 = 0〜20A、M2006 は 0〜10000 = 0〜10A)。どの種類の指令にも効く。
  * 初期値は種類ごとの最大。初めて回すとき・機構を壊したくないときに下げる

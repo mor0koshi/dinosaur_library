@@ -94,7 +94,7 @@ robomas_motor_t *robomas_add(robomas_t *rm, robomas_type_t type, int id) {
     m->angle_kp = 2.0f;
     m->angle_max_rpm = 100.0f;
     m->accel_limit = 0.0f; /* 上限なし */
-    m->ramp_reset = true;
+    m->restart = true;     /* speed_kd・angle_ki・angle_kd は memset で 0 (今までどおり速度 PI・角度 P) */
     m->mode = ROBOMAS_MODE_CURRENT;
     m->target = 0.0f;
     m->used = true; /* 設定を書き終えてから使う印を立てる (割り込みが途中の状態を見ないように) */
@@ -102,15 +102,18 @@ robomas_motor_t *robomas_add(robomas_t *rm, robomas_type_t type, int id) {
     return m;
 }
 
-/*
- * 制御の種類が変わったら積分を捨てる (前の種類の積分が残ると、切り替えた瞬間に飛び出す)。
- * 加速度の上限の目標も、今の回転数から始め直す
- */
+/* 積分を捨て、加速度の上限の目標と D の前回の値を、次の計算で今の値から始め直す */
+static void reset_control(robomas_motor_t *m) {
+    m->integral = 0.0f;
+    m->angle_iterm = 0.0f;
+    m->restart = true;
+}
+
+/* 制御の種類が変わったら積分を捨てる (前の種類の積分が残ると、切り替えた瞬間に飛び出す) */
 static void set_mode(robomas_motor_t *m, robomas_mode_t mode) {
     if (m->mode != mode) {
         m->mode = mode;
-        m->integral = 0.0f;
-        m->ramp_reset = true;
+        reset_control(m);
     }
 }
 
@@ -181,6 +184,7 @@ void robomas_reset_angle(robomas_motor_t *m) {
     }
     uint32_t pm = port_irq_save();
     m->fb_total = 0;
+    m->prev_angle = 0.0f; /* 角度の D が、原点の取り直しを「急に動いた」と思わないように */
     port_irq_restore(pm);
 }
 
@@ -204,27 +208,52 @@ void robomas_set_gear_ratio(robomas_motor_t *m, float ratio) {
     port_irq_restore(pm);
 }
 
-void robomas_set_speed_gain(robomas_motor_t *m, float kp, float ki, float i_limit) {
-    if (m == NULL || i_limit < 0.0f) {
-        lib_error_hook(LIB_ERR_PARAM, "robomas_set_speed_gain");
+void robomas_set_speed_i_limit(robomas_motor_t *m, float i_limit) {
+    if (m == NULL || !(i_limit >= 0.0f)) { /* NaN も断る */
+        lib_error_hook(LIB_ERR_PARAM, "robomas_set_speed_i_limit");
         return;
     }
     uint32_t pm = port_irq_save();
-    m->speed_kp = kp;
-    m->speed_ki = ki;
     m->speed_i_limit = i_limit;
     m->integral = clampf(m->integral, i_limit);
     port_irq_restore(pm);
 }
 
-void robomas_set_angle_gain(robomas_motor_t *m, float kp, float max_rpm) {
-    if (m == NULL || max_rpm < 0.0f) {
-        lib_error_hook(LIB_ERR_PARAM, "robomas_set_angle_gain");
+/* PID のゲインは 0 以上 (マイナスだと逆に効いて暴れる)。NaN も断る */
+static bool valid_gains(float kp, float ki, float kd) { return kp >= 0.0f && ki >= 0.0f && kd >= 0.0f; }
+
+void robomas_set_speed_pid(robomas_motor_t *m, float kp, float ki, float kd) {
+    if (m == NULL || !valid_gains(kp, ki, kd)) {
+        lib_error_hook(LIB_ERR_PARAM, "robomas_set_speed_pid");
+        return;
+    }
+    uint32_t pm = port_irq_save();
+    m->speed_kp = kp;
+    m->speed_ki = ki;
+    m->speed_kd = kd;
+    port_irq_restore(pm);
+}
+
+void robomas_set_angle_pid(robomas_motor_t *m, float kp, float ki, float kd) {
+    if (m == NULL || !valid_gains(kp, ki, kd)) {
+        lib_error_hook(LIB_ERR_PARAM, "robomas_set_angle_pid");
         return;
     }
     uint32_t pm = port_irq_save();
     m->angle_kp = kp;
+    m->angle_ki = ki;
+    m->angle_kd = kd;
+    port_irq_restore(pm);
+}
+
+void robomas_set_angle_max_rpm(robomas_motor_t *m, float max_rpm) {
+    if (m == NULL || !(max_rpm >= 0.0f)) { /* NaN も断る */
+        lib_error_hook(LIB_ERR_PARAM, "robomas_set_angle_max_rpm");
+        return;
+    }
+    uint32_t pm = port_irq_save();
     m->angle_max_rpm = max_rpm;
+    m->angle_iterm = clampf(m->angle_iterm, max_rpm);
     port_irq_restore(pm);
 }
 
@@ -248,11 +277,26 @@ void robomas_set_accel_limit(robomas_motor_t *m, float rpm_per_s) {
     port_irq_restore(pm);
 }
 
-/* 速度 PI。目標は出力軸 rpm。ギア比を掛けてローター rpm で計算するので、ギア比を変えてもゲインは同じ */
-static float speed_pi(robomas_motor_t *m, float out_rpm) {
-    float err = out_rpm * m->gear - (float)m->fb_rpm;
+/*
+ * 速度 PID。目標は出力軸 rpm。ギア比を掛けてローター rpm で計算するので、ギア比を変えてもゲインは同じ。
+ * D は目標ではなく今のローター rpm の変化にかける (目標を急に変えても D が飛び出さない)
+ */
+static float speed_pid(robomas_motor_t *m, float out_rpm, float rotor_rpm) {
+    float err = out_rpm * m->gear - rotor_rpm;
     m->integral = clampf(m->integral + err, m->speed_i_limit);
-    return m->speed_kp * err + m->speed_ki * m->integral;
+    float d = -(rotor_rpm - m->prev_rotor_rpm);
+    return m->speed_kp * err + m->speed_ki * m->integral + m->speed_kd * d;
+}
+
+/*
+ * 角度 PID。角度の差から目標の rpm (出力軸) を作り、最高 rpm で頭打ちにする。
+ * I の分も最高 rpm で頭打ちにする (たまりすぎて行き過ぎないように)。D は今の角度の変化にかける
+ */
+static float angle_pid(robomas_motor_t *m, float angle) {
+    float err = m->target - angle;
+    m->angle_iterm = clampf(m->angle_iterm + m->angle_ki * err, m->angle_max_rpm);
+    float d = -(angle - m->prev_angle);
+    return clampf(m->angle_kp * err + m->angle_iterm + m->angle_kd * d, m->angle_max_rpm);
 }
 
 /*
@@ -260,10 +304,6 @@ static float speed_pi(robomas_motor_t *m, float out_rpm) {
  * 始め直すときは今の回転数から始める (回っている途中で切り替えても、0 rpm に向かって急ブレーキしない)
  */
 static float ramp(robomas_motor_t *m, float target) {
-    if (m->ramp_reset) {
-        m->ramp_rpm = (float)m->fb_rpm / m->gear;
-        m->ramp_reset = false;
-    }
     if (m->accel_limit > 0.0f) {
         m->ramp_rpm += clampf(target - m->ramp_rpm, m->accel_limit * 0.001f);
     } else {
@@ -275,25 +315,34 @@ static float ramp(robomas_motor_t *m, float target) {
 /* 1 台分の電流指令を計算する。mode・target・integral を読み書きするので、割り込みを止めて呼ぶこと */
 static int16_t compute(robomas_motor_t *m) {
     if (!robomas_ok(m)) {
-        /* フィードバックが無いのに積分がたまり続けると、復帰した瞬間に暴れる */
-        m->integral = 0.0f;
-        m->ramp_reset = true; /* 戻ってきたら、そのときの回転数から近づけ直す */
+        /* フィードバックが無いのに積分がたまり続けると、復帰した瞬間に暴れる。戻ってきたら、そのときの値から始め直す */
+        reset_control(m);
         return 0;
+    }
+    float rotor_rpm = (float)m->fb_rpm;
+    float angle = robomas_angle(m);
+    if (m->restart) {
+        m->ramp_rpm = rotor_rpm / m->gear; /* 回っている途中で切り替えても、0 rpm に向かって急ブレーキしない */
+        m->prev_rotor_rpm = rotor_rpm;     /* 始めた瞬間に D が飛び出さない */
+        m->prev_angle = angle;
+        m->restart = false;
     }
     float cmd;
     switch (m->mode) {
     case ROBOMAS_MODE_SPEED:
-        cmd = speed_pi(m, ramp(m, m->target));
+        cmd = speed_pid(m, ramp(m, m->target), rotor_rpm);
         break;
     case ROBOMAS_MODE_ANGLE:
-        /* 角度の差に比例した目標 rpm を作り (上限で頭打ち)、速度制御に渡す */
-        cmd = speed_pi(m, clampf(m->angle_kp * (m->target - robomas_angle(m)), m->angle_max_rpm));
+        /* 角度 PID で目標 rpm を作り、速度 PID に渡す */
+        cmd = speed_pid(m, angle_pid(m, angle), rotor_rpm);
         break;
     case ROBOMAS_MODE_CURRENT:
     default:
         cmd = m->target;
         break;
     }
+    m->prev_rotor_rpm = rotor_rpm;
+    m->prev_angle = angle;
     return (int16_t)clampf(cmd, (float)m->current_limit);
 }
 
@@ -362,8 +411,7 @@ void robomas_stop_all(robomas_t *rm) {
             uint32_t pm = port_irq_save(); /* 1 台ずつ止める (割り込みを止める時間を短く保つ) */
             m->mode = ROBOMAS_MODE_CURRENT;
             m->target = 0.0f;
-            m->integral = 0.0f;
-            m->ramp_reset = true;
+            reset_control(m);
             port_irq_restore(pm);
         }
     }
