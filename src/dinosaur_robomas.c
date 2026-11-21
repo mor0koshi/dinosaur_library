@@ -58,17 +58,22 @@ static void on_feedback(uint32_t id, const uint8_t *d, uint8_t len, void *arg) {
 }
 
 lib_status_t robomas_init(robomas_t *rm, can_t *bus) {
-    if (rm == NULL || bus == NULL) {
+    /* bus->hcan が NULL = can_init がまだ。ここで受信を登録しても can_init で消える */
+    if (rm == NULL || bus == NULL || bus->hcan == NULL) {
         return port_fail(LIB_ERR_PARAM, "robomas_init");
     }
     memset(rm, 0, sizeof *rm);
-    rm->bus = bus;
-    return can_subscribe_range(bus, ROBOMAS_FB_FIRST, ROBOMAS_FB_LAST, on_feedback, rm);
+    lib_status_t st = can_subscribe_range(bus, ROBOMAS_FB_FIRST, ROBOMAS_FB_LAST, on_feedback, rm);
+    if (st == LIB_OK) {
+        rm->bus = bus; /* 失敗したら NULL のままにして、robomas_add も失敗させる (黙って動かないのを防ぐ) */
+    }
+    return st;
 }
 
 robomas_motor_t *robomas_add(robomas_t *rm, robomas_type_t type, int id) {
-    if (rm == NULL || id < 1 || id > ROBOMAS_MAX_MOTORS || (type != ROBOMAS_M3508 && type != ROBOMAS_M2006) ||
-        rm->motors[id - 1].used) {
+    /* rm->bus が NULL = robomas_init がまだ。ここで登録しても robomas_init で消える */
+    if (rm == NULL || rm->bus == NULL || id < 1 || id > ROBOMAS_MAX_MOTORS ||
+        (type != ROBOMAS_M3508 && type != ROBOMAS_M2006) || rm->motors[id - 1].used) {
         lib_error_hook(LIB_ERR_PARAM, "robomas_add");
         return NULL;
     }
@@ -184,12 +189,15 @@ int robomas_temp(const robomas_motor_t *m) {
     return m->fb_temp;
 }
 
+/* 調整の関数も、robomas_update (タイマー割り込み) の計算の途中で値が変わらないよう、割り込みを止めて書く */
 void robomas_set_gear_ratio(robomas_motor_t *m, float ratio) {
     if (m == NULL || !(ratio > 0.0f)) {
         lib_error_hook(LIB_ERR_PARAM, "robomas_set_gear_ratio");
         return;
     }
+    uint32_t pm = port_irq_save();
     m->gear = ratio;
+    port_irq_restore(pm);
 }
 
 void robomas_set_speed_gain(robomas_motor_t *m, float kp, float ki, float i_limit) {
@@ -197,10 +205,12 @@ void robomas_set_speed_gain(robomas_motor_t *m, float kp, float ki, float i_limi
         lib_error_hook(LIB_ERR_PARAM, "robomas_set_speed_gain");
         return;
     }
+    uint32_t pm = port_irq_save();
     m->speed_kp = kp;
     m->speed_ki = ki;
     m->speed_i_limit = i_limit;
     m->integral = clampf(m->integral, i_limit);
+    port_irq_restore(pm);
 }
 
 void robomas_set_angle_gain(robomas_motor_t *m, float kp, float max_rpm) {
@@ -208,8 +218,10 @@ void robomas_set_angle_gain(robomas_motor_t *m, float kp, float max_rpm) {
         lib_error_hook(LIB_ERR_PARAM, "robomas_set_angle_gain");
         return;
     }
+    uint32_t pm = port_irq_save();
     m->angle_kp = kp;
     m->angle_max_rpm = max_rpm;
+    port_irq_restore(pm);
 }
 
 /* 速度 PI。目標は出力軸 rpm。ギア比を掛けてローター rpm で計算するので、ギア比を変えてもゲインは同じ */
@@ -256,8 +268,20 @@ lib_status_t robomas_update(robomas_t *rm) {
     uint8_t high[8] = {0};
     bool use_low = false;
     bool use_high = false;
+    uint32_t now = HAL_GetTick();
     /* 全モーターの計算を 1 回の割り込み禁止で行う (set_* と同時に走っても、種類と目標が食い違わない) */
     uint32_t pm = port_irq_save();
+    /*
+     * 計算して送るのは 1ms に 1 回だけ。待たずに何度も呼ばれたとき毎回送ると、ID の小さい指令 (0x200 / 0x1FF) が
+     * CAN を埋めて ESC のフィードバック (0x201〜) が通れなくなり、robomas_ok が false になって全部止まる。
+     * また積分は 1 回の計算ごとに足すので、呼ぶ回数でゲインの効き方が変わらないようにする
+     */
+    if (rm->updated && rm->last_update_ms == now) {
+        port_irq_restore(pm);
+        return LIB_OK;
+    }
+    rm->updated = true;
+    rm->last_update_ms = now;
     for (int i = 0; i < ROBOMAS_MAX_MOTORS; i++) {
         robomas_motor_t *m = &rm->motors[i];
         if (!m->used) {

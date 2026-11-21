@@ -10,8 +10,10 @@
  *   if (can_read(&box, data)) { ... }     // 新しく届いていれば true
  *
  * CubeMX の準備: CAN を有効にして通信速度を決め、NVIC で RX0 と TX の割り込みをオンにする。
- * HAL_CAN_Start とフィルタの設定は自分で書かない (can_init がやる)。
- * can_init は 1 つの CAN につき 1 回、can_listen・can_subscribe・robomas_init より先に呼ぶ (後から呼ぶと登録が消える)。
+ * HAL_CAN_Start とフィルタの設定は自分で書かない (can_init がやる。HAL_CAN_Start が先に呼ばれていても、止めてやり直す)。
+ * 自動復帰 (ABOM)・自動再送 (NART)・送る順番 (TXFP) は CubeMX の設定に関係なく can_init が決める。
+ * can_init は 1 つの CAN につき 1 回、can_listen・can_subscribe・robomas_init より先に呼ぶ
+ * (先に can_listen などを呼ぶと LIB_ERR_PARAM。can_init を後からもう一度呼ぶと登録が消える)。
  * 別の can_t で、登録済みの CAN を初期化すると LIB_ERR_PARAM。
  */
 #include <stdbool.h>
@@ -73,7 +75,7 @@ typedef struct {
 } can_frame_t;
 
 typedef struct can {
-    CAN_HandleTypeDef *hcan;
+    CAN_HandleTypeDef *hcan; /* NULL = まだ can_init していない */
     can_sub_t subs[CAN_MAX_SUBS];
     volatile uint8_t nsubs;
     can_frame_t txq[CAN_TXQ_LEN]; /* 送信待ちの列 (リングバッファ) */
@@ -86,7 +88,7 @@ typedef struct can {
 
 lib_status_t can_init(can_t *bus, CAN_HandleTypeDef *hcan);
 
-/* 送る。メールボックスが空いていなければ列に積み、送信完了の割り込みで順に出す。列があふれたら LIB_ERR_FULL */
+/* 送る。メールボックスが空いていなければ列に積み、送信完了の割り込みで積んだ順に出す。列があふれたら LIB_ERR_FULL */
 lib_status_t can_send(can_t *bus, uint32_t id, const uint8_t *data, uint8_t len);
 
 /* id の最新の 1 フレームを box に取っておく */

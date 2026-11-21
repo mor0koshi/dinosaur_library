@@ -23,6 +23,12 @@ static int16_t sent_current(int frame, int esc_id) {
     return (int16_t)((d[slot * 2] << 8) | d[slot * 2 + 1]);
 }
 
+/* 1ms 進めてから robomas_update を呼ぶ (update は 1ms に 1 回だけ計算して送る) */
+static lib_status_t update_next_ms(void) {
+    fake.tick++;
+    return robomas_update(&rm);
+}
+
 static void setup(void) {
     can_init(&can1, &hcan1);
     CHECK_EQ(robomas_init(&rm, &can1), LIB_OK);
@@ -180,10 +186,10 @@ static void test_speed_pi(void) {
     robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1); /* kp 1.5 / ki 0.08 / ギア比 36 */
     feedback(1, 0, 0, 0, 0);
     robomas_set_rpm(m, 10.0f); /* 出力軸 10rpm = ローター 360rpm */
-    robomas_update(&rm);
+    update_next_ms();
     CHECK_EQ(sent_current(0, 1), 568); /* 誤差 360、積分 360 → 1.5 * 360 + 0.08 * 360 = 568.8 */
     feedback(1, 0, 300, 0, 0);         /* ローター 300rpm まで上がった */
-    robomas_update(&rm);
+    update_next_ms();
     CHECK_EQ(sent_current(1, 1), 123); /* 誤差 60、積分 420 → 1.5 * 60 + 0.08 * 420 = 123.6 */
 }
 
@@ -193,9 +199,9 @@ static void test_integral_is_limited(void) {
     feedback(1, 0, 0, 0, 0);
     robomas_set_speed_gain(m, 0.0f, 1.0f, 5000.0f); /* 積分だけ */
     robomas_set_rpm(m, 100.0f);                     /* ローター 3600rpm。誤差 3600 */
-    robomas_update(&rm);
+    update_next_ms();
     CHECK_EQ(sent_current(0, 1), 3600);
-    robomas_update(&rm);
+    update_next_ms();
     CHECK_EQ(sent_current(1, 1), 5000); /* 積分 7200 → 5000 で頭打ち */
 }
 
@@ -207,13 +213,13 @@ static void test_angle_mode(void) {
     robomas_set_angle_gain(m, 2.0f, 100.0f);
     feedback(1, 0, 0, 0, 0);
     robomas_set_angle(m, 10.0f); /* 誤差 10 度 → 目標 20rpm → 電流 20 */
-    robomas_update(&rm);
+    update_next_ms();
     CHECK_EQ(sent_current(0, 1), 20);
     robomas_set_angle(m, 360.0f); /* 誤差 360 度 → 720rpm だが 100rpm で頭打ち */
-    robomas_update(&rm);
+    update_next_ms();
     CHECK_EQ(sent_current(1, 1), 100);
     robomas_set_angle(m, -360.0f);
-    robomas_update(&rm);
+    update_next_ms();
     CHECK_EQ(sent_current(2, 1), -100);
 }
 
@@ -223,10 +229,10 @@ static void test_mode_change_resets_integral(void) {
     robomas_set_speed_gain(m, 0.0f, 1.0f, 5000.0f);
     feedback(1, 0, 0, 0, 0);
     robomas_set_rpm(m, 10.0f); /* 誤差 360 */
-    robomas_update(&rm);       /* 積分 360 */
+    update_next_ms();          /* 積分 360 */
     robomas_set_current(m, 0);
     robomas_set_rpm(m, 10.0f);
-    robomas_update(&rm);
+    update_next_ms();
     CHECK_EQ(sent_current(1, 1), 360); /* 積分が 0 からやり直しなので 720 にはならない */
 }
 
@@ -236,12 +242,12 @@ static void test_lost_feedback_outputs_zero_and_resets_integral(void) {
     robomas_set_speed_gain(m, 0.0f, 1.0f, 5000.0f);
     feedback(1, 0, 0, 0, 0);
     robomas_set_rpm(m, 10.0f);
-    robomas_update(&rm); /* 積分 360 */
-    fake.tick = 100;     /* フィードバックが 100ms 途絶えた */
+    update_next_ms(); /* 積分 360 */
+    fake.tick = 100;  /* フィードバックが 100ms 途絶えた */
     robomas_update(&rm);
     CHECK_EQ(sent_current(1, 1), 0);
     feedback(1, 0, 0, 0, 0); /* 復帰 */
-    robomas_update(&rm);
+    update_next_ms();
     CHECK_EQ(sent_current(2, 1), 360); /* 積分はリセットされている (720 にならない) */
 }
 
@@ -279,6 +285,16 @@ static void test_commands_lock_irq(void) {
     robomas_stop_all(&rm);
     CHECK(fake.irq_disable_calls > before);
     CHECK_EQ(fake.primask, 0);
+    before = fake.irq_disable_calls;
+    robomas_set_speed_gain(m, 1.0f, 0.1f, 1000.0f);
+    CHECK(fake.irq_disable_calls > before);
+    before = fake.irq_disable_calls;
+    robomas_set_angle_gain(m, 1.0f, 50.0f);
+    CHECK(fake.irq_disable_calls > before);
+    before = fake.irq_disable_calls;
+    robomas_set_gear_ratio(m, 10.0f);
+    CHECK(fake.irq_disable_calls > before);
+    CHECK_EQ(fake.primask, 0);
 }
 
 /* robomas_update は全モーターの計算を割り込みを止めて行い、送る前に元に戻す */
@@ -296,6 +312,44 @@ static void test_update_locks_irq_and_restores(void) {
     CHECK(fake.irq_disable_calls - before > send_only); /* 計算の分の止めが加わっている */
     CHECK_EQ(fake.primask, 0);
     CHECK_EQ(fake.can_sent_count, 2);
+}
+
+/*
+ * while (1) の中で 1ms を待たずに呼んでも、計算して送るのは 1ms に 1 回だけ。
+ * 毎回送ると、ID の小さい指令 (0x200) が CAN を埋めて ESC のフィードバック (0x201〜) が通れなくなり、全部止まってしまう。
+ */
+static void test_update_runs_at_most_once_per_ms(void) {
+    setup();
+    robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
+    robomas_set_speed_gain(m, 0.0f, 1.0f, 5000.0f); /* 積分だけ */
+    feedback(1, 0, 0, 0, 0);
+    robomas_set_rpm(m, 10.0f); /* 誤差 360 */
+    fake.tick = 5;
+    for (int i = 0; i < 10; i++) {
+        CHECK_EQ(robomas_update(&rm), LIB_OK);
+    }
+    CHECK_EQ(fake.can_sent_count, 1);
+    CHECK_EQ(sent_current(0, 1), 360); /* 積分は 1 回分だけ */
+    fake.tick = 6;
+    robomas_update(&rm);
+    CHECK_EQ(fake.can_sent_count, 2);
+    CHECK_EQ(sent_current(1, 1), 720);
+    CHECK_EQ(fake.primask, 0);
+}
+
+/* robomas_init の前に robomas_add すると、init で消えてしまう。黙って消えないよう NULL を返す */
+static void test_add_before_init_fails(void) {
+    static robomas_t not_inited;
+    CHECK(robomas_add(&not_inited, ROBOMAS_M3508, 1) == NULL);
+    CHECK_EQ(fake.last_error, LIB_ERR_PARAM);
+}
+
+/* can_init の前に robomas_init すると、受信の登録が can_init で消える。失敗を返し、そのあとの add も NULL */
+static void test_init_before_can_init_fails(void) {
+    static can_t not_inited;
+    static robomas_t r;
+    CHECK(robomas_init(&r, &not_inited) != LIB_OK);
+    CHECK(robomas_add(&r, ROBOMAS_M3508, 1) == NULL);
 }
 
 static void test_bad_settings_and_null(void) {
@@ -335,6 +389,9 @@ int main(void) {
     RUN(test_stop_all);
     RUN(test_commands_lock_irq);
     RUN(test_update_locks_irq_and_restores);
+    RUN(test_update_runs_at_most_once_per_ms);
+    RUN(test_add_before_init_fails);
+    RUN(test_init_before_can_init_fails);
     RUN(test_bad_settings_and_null);
     return TEST_RESULT();
 }

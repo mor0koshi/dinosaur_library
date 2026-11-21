@@ -10,6 +10,12 @@
 
 #if defined(HAL_TIM_MODULE_ENABLED)
 
+/* タイマーがエンコーダーモードで、すでに数えているか (SMCR の SMS が 1〜3 = エンコーダーモード) */
+static bool running_as_encoder(const TIM_HandleTypeDef *htim) {
+    uint32_t sms = htim->Instance->SMCR & TIM_SMCR_SMS;
+    return (htim->Instance->CR1 & TIM_CR1_CEN) != 0U && sms >= 1U && sms <= 3U;
+}
+
 lib_status_t encoder_init(encoder_t *e, TIM_HandleTypeDef *htim, int32_t counts_per_rev) {
     if (e == NULL || htim == NULL || counts_per_rev <= 0) {
         return port_fail(LIB_ERR_PARAM, "encoder_init");
@@ -17,7 +23,11 @@ lib_status_t encoder_init(encoder_t *e, TIM_HandleTypeDef *htim, int32_t counts_
     memset(e, 0, sizeof *e);
     e->htim = htim;
     e->cpr = counts_per_rev;
-    if (HAL_TIM_Encoder_Start(htim, TIM_CHANNEL_ALL) != HAL_OK) {
+    /*
+     * すでに開始している (講習 07 のコードで HAL_TIM_Encoder_Start も呼んでいる、もう一度 init した) と
+     * HAL_TIM_Encoder_Start は失敗する。エンコーダーとして動いているなら、そのまま使う
+     */
+    if (HAL_TIM_Encoder_Start(htim, TIM_CHANNEL_ALL) != HAL_OK && !running_as_encoder(htim)) {
         return port_fail(LIB_ERR_HAL, "encoder_init");
     }
     port_cycles_enable();

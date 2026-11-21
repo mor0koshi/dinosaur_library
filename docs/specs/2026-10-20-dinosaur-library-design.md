@@ -186,6 +186,9 @@ can_subscribe_range(&can1, 0x201, 0x208, my_handler, NULL);
 - **フィルタ**: 全部受け取る設定 (マスク 0) で FIFO0 へ。フィルタの番号は CAN1・CAN3 が 0、CAN2 が 14 (SlaveStartFilterBank = 14)
 - **ABOM** (バスオフからの自動復帰): `HAL_CAN_Start` の前、初期化モードのうちに `MCR` の `ABOM` ビットを立てる。CubeMX の設定に関係なく有効になる
 - **自動再送**: 同じく `NART` ビットを下ろす。オンのままだと送信に失敗したとき完了の割り込みが来ず、送信の列が止まる
+- **送る順番**: 同じく `TXFP` ビットを立て、メールボックスに入れた順に送る。下ろしたままだと ID の小さい順 (同じ ID ならメールボックスの番号順) になり、同じ ID を続けて送ると新しいフレームが古いフレームを追い越すことがある
+- **開始済みの CAN**: `hcan->State` が `HAL_CAN_STATE_LISTENING` (同じ `can_t` での 2 回目の `can_init`、使う側が `HAL_CAN_Start` も呼んでいる) なら、`HAL_CAN_Stop` で止めてから設定し直す (そのままだと `HAL_CAN_Start` が失敗する)
+- **順番の間違いの検出**: `can_init` していない `can_t` (`hcan` が NULL) への `can_listen`・`can_subscribe`・`can_subscribe_range` は `LIB_ERR_PARAM` (登録しても `can_init` の memset で黙って消えるため)
 - **1 つの CAN に 1 つの `can_t`**: `can_init` は 1 つの CAN につき 1 回、`can_listen`・`can_subscribe`・`robomas_init` より先に呼ぶ (同じ `can_t` をもう一度 `can_init` すると登録が消える)。別の `can_t` で、すでに登録された CAN を初期化しようとすると `LIB_ERR_PARAM` を返す。SBUS の `sbus_init` も同じ (別の `sbus_t` で同じ UART は `LIB_ERR_PARAM`)
 - **NULL**: `can_put_*` は `d` が NULL なら何もせず、`can_get_*` は 0 を返す
 - **設定忘れの検出**: `can_init` は `NVIC_GetEnableIRQ` で RX0 と TX の割り込みが有効か確かめ、オフなら `LIB_ERR_IRQ_OFF` を返す
@@ -257,6 +260,22 @@ sbus_set_deadband(&sbus, 26);                  // 中立から ±26 以内は 0
 - `sbus_update` は割り込みを止めてから 16ch・フラグ・受信時刻をまとめて写す
 - `sbus_t` は 2 つまで登録できる
 - RX の DMA が設定されていない (`huart->hdmarx == NULL`) か、Circular (`Init.Mode == DMA_CIRCULAR`) のときは `sbus_init` が `LIB_ERR_IRQ_OFF` を返す (Circular だと受信をかけ直せず、古いフレームを読み続けるため)
+- `sbus_init` の時点でその UART の受信が動いている (`huart->RxState == HAL_UART_STATE_BUSY_RX`。使う側が自分のバッファで受信を始めていた) なら、`HAL_UART_AbortReceive` で止めてからライブラリのバッファで受信を始める。別の `sbus_t` で断る場合は止めない
+- 割り込みの中で受信のかけ直しに失敗したら印を残し、`sbus_update` が割り込みを止めてかけ直す (成功するまで毎回)。失敗の `lib_error_hook` は割り込みの中で 1 回だけ呼ぶ
+
+### チャンネルごとの補正
+
+古い・壊れかけのプロポは、スティックごとに中立がずれたり、端まで値が出なかったりする。範囲と不感帯はチャンネルごとに持つ。
+
+```c
+sbus_set_stick_range(&sbus, 368, 1024, 1680);         // 全部の ch (チャンネルごとの設定も上書きする)
+sbus_set_deadband(&sbus, 26);                         // 全部の ch
+sbus_set_channel_range(&sbus, 1, 400, 1040, 1600);    // ch1 だけ
+sbus_set_channel_deadband(&sbus, 1, 40);              // ch1 だけ
+```
+
+- スティックの変換とスイッチの境目は、そのチャンネルの値で計算する
+- 値は `0 <= 最小 < 中立 < 最大 <= 2047`、不感帯は 0〜2047。外れたら `LIB_ERR_PARAM` で何も変えない
 
 ## 3. エンコーダー (`dinosaur_encoder`)
 
@@ -284,6 +303,7 @@ encoder_reset(&enc1);                // 累積を 0 に戻す
 ### 中でやること
 
 - `encoder_init` で `HAL_TIM_Encoder_Start(htim, TIM_CHANNEL_ALL)` を呼び、今のカウンタ値を基準にする
+  - すでに開始していると HAL は失敗を返す。タイマーがエンコーダーモード (`SMCR` の `SMS` が 1〜3) で動いている (`CR1` の `CEN`) なら、そのまま使う (使う側が `HAL_TIM_Encoder_Start` も呼んでいる場合。前は失敗したまま DWT が有効にならず、rpm が 0 のままだった)
 - **桁あふれ**: `ARR + 1` を一周として、前回との差を `-(一周/2)` 〜 `+(一周/2)` に入るよう折り返す (64bit で計算する)。16bit でも 32bit タイマーでも正しく数える。1 周期の間にタイマーが半周以上進むと数え間違えるが、16bit・2048 カウントで 10ms 周期なら 96000rpm までなので問題ない
 - **rpm**: `update` を呼んだ間隔を DWT のサイクルカウンタで測る (`SystemCoreClock` で秒に直す)。`encoder_init` で DWT を有効にする (F7 は LAR のロック解除も行う)。サイクルカウンタは 216MHz で約 19.8 秒で一周するので、前回から `HAL_GetTick` で 10 秒以上空いたときは rpm を 0 にする
 - 最初の `update` は `encoder_init` からの間隔で計算する。間隔が 0 なら rpm は前回の値のまま
@@ -406,6 +426,9 @@ robomas_stop_all(&rm);              // 全モーターを電流指令 0 にし�
 - `robomas_update` はメインループでもタイマー割り込みでも呼べる。`robomas_set_*` と `robomas_stop_all` の書き込み (種類 + 目標 + 積分のリセット) と、`update` の全モーターの計算は、`port_irq_save` / `port_irq_restore` で割り込みを止めて行う。`can_send` は自分で止めるので、`update` は計算を終えて割り込みを戻してから呼ぶ
 - CAN の断線や ESC の電源断のあいだに回った分は数えられない。途絶のあいだの回転がローター半周未満ならずれないが、それより多いとローター何回転ぶんでも (上限なく) ずれうる。途絶のあとは `robomas_reset_angle` で原点を取り直す
 - `update` は、ID 1〜4 のモーターが 1 つ以上あれば 0x200 を、ID 5〜8 のモーターが 1 つ以上あれば 0x1FF を送る (使っていない範囲のフレームは送らない)
+- `update` が計算して送るのは **1ms (`HAL_GetTick` が変わる) ごとに 1 回**。同じ 1ms のあいだの 2 回目以降は何もせず `LIB_OK`。待たずに何度も呼ばれて毎回送ると、ID の小さい指令が CAN を埋めて ESC のフィードバック (0x201〜) が通れなくなり、`robomas_ok` が false になって全部止まるため。積分の効き方も呼ぶ回数で変わらなくなる
+- 順番の間違いの検出: `can_init` していない `can_t` での `robomas_init` は `LIB_ERR_PARAM`。`robomas_init` していない (失敗した) `robomas_t` への `robomas_add` は NULL
+- `robomas_set_gear_ratio`・`robomas_set_speed_gain`・`robomas_set_angle_gain` も割り込みを止めて書く
 
 ### CAN の通信量 (README に書く)
 
@@ -421,11 +444,11 @@ robomas_stop_all(&rm);              // 全モーターを電流指令 0 にし�
 
 | 部品 | 確かめること |
 |---|---|
-| SBUS | 既知のフレーム → 16ch の値、先頭のゴミを飛ばす、途中の 0x0F を読み飛ばす (末尾のバイトの確認、SBUS2 の末尾)、Circular の DMA を断る、正常の判定 (未受信・200ms 途絶・フェイルセーフ・フレーム落ちは無視)、スティックの変換 (不感帯・非対称・頭打ち)、スイッチの境目、NG のときは 0、UART エラーで受信を再開 |
-| CAN | ID ごとの振り分け (箱・関数・範囲・重なり)、知らない ID は捨てる、4 フレーム以上送ると列に入り完了割り込みで順に出る、あふれたら `LIB_ERR_FULL` と捨てた数、`put` / `get` の往復、CAN2 のフィルタ番号 14、割り込みがオフなら `LIB_ERR_IRQ_OFF` |
-| エンコーダー | 16bit・32bit の桁あふれ (両方向)、逆向き、rpm (偽の DWT で時間を進める)、10 秒以上空いたら rpm 0、リセット |
+| SBUS | 既知のフレーム → 16ch の値、先頭のゴミを飛ばす、途中の 0x0F を読み飛ばす (末尾のバイトの確認、SBUS2 の末尾)、Circular の DMA を断る、正常の判定 (未受信・200ms 途絶・フェイルセーフ・フレーム落ちは無視)、スティックの変換 (不感帯・非対称・頭打ち)、スイッチの境目、NG のときは 0、UART エラーで受信を再開、チャンネルごとの補正 (範囲・不感帯・スイッチの境目、全体の設定での上書き)、動いている受信の乗っ取り、かけ直しの失敗を `sbus_update` で再挑戦 |
+| CAN | ID ごとの振り分け (箱・関数・範囲・重なり)、知らない ID は捨てる、4 フレーム以上送ると列に入り完了割り込みで順に出る、あふれたら `LIB_ERR_FULL` と捨てた数、`put` / `get` の往復、CAN2 のフィルタ番号 14、割り込みがオフなら `LIB_ERR_IRQ_OFF`、TXFP、開始済みの CAN でも `can_init` が成功する、`can_init` 前の登録を断る |
+| エンコーダー | 16bit・32bit の桁あふれ (両方向)、逆向き、rpm (偽の DWT で時間を進める)、10 秒以上空いたら rpm 0、リセット、開始済みのタイマーでも `encoder_init` が成功する (エンコーダーモード以外は断る) |
 | エンコーダー CAN | 送ったフレームの中身、受けた値の取り出し (負の値も)、未受信の age |
-| ロボマス | 指令と update が割り込みを止めて動く (終わったら戻す)、フィードバックの解釈 (ビッグエンディアン)、何回転してもの角度 (両方向・一周またぎ・最初は 0 度)、出力軸への換算、0x200 / 0x1FF の中身 (使っていない範囲のフレームは送らない)、電流の頭打ち、積分の頭打ち、途絶 → 出力 0 と積分リセット、`stop_all`、モード切替で積分リセット、同じ ID の二重登録は NULL |
+| ロボマス | 指令と update が割り込みを止めて動く (終わったら戻す)、フィードバックの解釈 (ビッグエンディアン)、何回転してもの角度 (両方向・一周またぎ・最初は 0 度)、出力軸への換算、0x200 / 0x1FF の中身 (使っていない範囲のフレームは送らない)、電流の頭打ち、積分の頭打ち、途絶 → 出力 0 と積分リセット、`stop_all`、モード切替で積分リセット、同じ ID の二重登録は NULL、同じ 1ms の 2 回目以降の `update` は送らない、init の順番が逆なら失敗 |
 
 ### ARM でのビルド確認
 

@@ -60,9 +60,17 @@ extern CAN_TypeDef fake_can1, fake_can2, fake_can3;
 #define CAN3 (&fake_can3)
 #define CAN_MCR_ABOM (1UL << 6)
 #define CAN_MCR_NART (1UL << 4)
+#define CAN_MCR_TXFP (1UL << 2)
+
+typedef enum {
+    HAL_CAN_STATE_RESET = 0x00U,
+    HAL_CAN_STATE_READY = 0x01U,
+    HAL_CAN_STATE_LISTENING = 0x02U,
+} HAL_CAN_StateTypeDef;
 
 typedef struct {
     CAN_TypeDef *Instance;
+    HAL_CAN_StateTypeDef State; /* HAL_CAN_Start で LISTENING、HAL_CAN_Stop で READY */
 } CAN_HandleTypeDef;
 
 typedef struct {
@@ -110,6 +118,7 @@ typedef struct {
 
 HAL_StatusTypeDef HAL_CAN_ConfigFilter(CAN_HandleTypeDef *hcan, const CAN_FilterTypeDef *sFilterConfig);
 HAL_StatusTypeDef HAL_CAN_Start(CAN_HandleTypeDef *hcan);
+HAL_StatusTypeDef HAL_CAN_Stop(CAN_HandleTypeDef *hcan);
 HAL_StatusTypeDef HAL_CAN_ActivateNotification(CAN_HandleTypeDef *hcan, uint32_t ActiveITs);
 uint32_t HAL_CAN_GetTxMailboxesFreeLevel(const CAN_HandleTypeDef *hcan);
 HAL_StatusTypeDef HAL_CAN_AddTxMessage(CAN_HandleTypeDef *hcan, const CAN_TxHeaderTypeDef *pHeader,
@@ -140,20 +149,31 @@ typedef struct {
 typedef struct {
     int dummy;
 } USART_TypeDef;
+typedef enum {
+    HAL_UART_STATE_RESET = 0x00U,
+    HAL_UART_STATE_READY = 0x20U,
+    HAL_UART_STATE_BUSY_RX = 0x22U,
+} HAL_UART_StateTypeDef;
 typedef struct {
     USART_TypeDef *Instance;
     DMA_HandleTypeDef *hdmarx;
+    HAL_UART_StateTypeDef RxState; /* 受信を始めると BUSY_RX */
 } UART_HandleTypeDef;
 
 HAL_StatusTypeDef HAL_UARTEx_ReceiveToIdle_DMA(UART_HandleTypeDef *huart, uint8_t *pData, uint16_t Size);
+HAL_StatusTypeDef HAL_UART_AbortReceive(UART_HandleTypeDef *huart);
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size);
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart);
 
 /* ---- TIM ---- */
 typedef struct {
+    uint32_t CR1;
+    uint32_t SMCR; /* SMS (下位 3bit) が 1〜3 ならエンコーダーモード。CubeMX の MX_TIMx_Init が設定する */
     uint32_t CNT;
     uint32_t ARR;
 } TIM_TypeDef;
+#define TIM_CR1_CEN (1UL << 0)
+#define TIM_SMCR_SMS (0x7UL)
 typedef struct {
     TIM_TypeDef *Instance;
 } TIM_HandleTypeDef;

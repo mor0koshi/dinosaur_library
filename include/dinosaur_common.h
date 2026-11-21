@@ -8,7 +8,7 @@ extern "C" {
 /* 関数の結果。LIB_OK 以外のときは lib_error_hook も呼ばれている */
 typedef enum {
     LIB_OK = 0,
-    LIB_ERR_PARAM,   /* 引数がおかしい (ID が範囲外、同じ ID を二重に登録、NULL など) */
+    LIB_ERR_PARAM,   /* 引数がおかしい (ID が範囲外、同じ ID を二重に登録、NULL、init の順番が逆、など) */
     LIB_ERR_FULL,    /* 登録の表、または送信待ちの列がいっぱい */
     LIB_ERR_HAL,     /* HAL の関数が失敗した */
     LIB_ERR_IRQ_OFF, /* CubeMX で必要な割り込みや DMA がオフ */

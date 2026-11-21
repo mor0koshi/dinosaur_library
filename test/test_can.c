@@ -266,6 +266,35 @@ static void test_init_refuses_second_can_t_for_same_hcan(void) {
     CHECK_EQ(can_init(&can1, &hcan1), LIB_OK);
 }
 
+/* 同じ ID を続けて送ったとき、メールボックスの番号の順ではなく積んだ順に出るよう、TXFP を立てる */
+static void test_init_sets_tx_fifo_priority(void) {
+    fake_can1.MCR = 0;
+    CHECK_EQ(can_init(&can1, &hcan1), LIB_OK);
+    CHECK(fake.can_mcr_at_start & CAN_MCR_TXFP);
+}
+
+/* 講習 08 のコードで HAL_CAN_Start を自分でも呼んでいた (すでに開始している) ときも、止めてからやり直して成功する */
+static void test_init_works_when_already_started(void) {
+    hcan1.State = HAL_CAN_STATE_LISTENING; /* HAL_CAN_Start を自分で呼んだあと */
+    int errors = fake.error_count;
+    CHECK_EQ(can_init(&can1, &hcan1), LIB_OK);
+    CHECK_EQ(fake.can_stop_calls, 1);
+    CHECK_EQ(hcan1.State, HAL_CAN_STATE_LISTENING);
+    CHECK_EQ(fake.error_count, errors);
+    CHECK(fake.can_mcr_at_start & CAN_MCR_ABOM);
+}
+
+/* can_init の前に登録すると、can_init で消えてしまう。黙って消えないよう、先に呼んだら断る */
+static void test_listen_before_init_is_rejected(void) {
+    static can_t not_inited;
+    static can_box_t b;
+    CHECK_EQ(can_listen(&not_inited, 0x10, &b), LIB_ERR_PARAM);
+    CHECK(strcmp(fake.last_where, "can_listen") == 0);
+    CHECK_EQ(can_subscribe(&not_inited, 0x10, handler_b, NULL), LIB_ERR_PARAM);
+    CHECK(strcmp(fake.last_where, "can_subscribe_range") == 0);
+    CHECK_EQ(not_inited.nsubs, 0);
+}
+
 static void test_error_hook_names(void) {
     can_init(&can1, &hcan1);
     CHECK_EQ(can_subscribe_range(&can1, 5, 1, NULL, NULL), LIB_ERR_PARAM);
@@ -313,5 +342,8 @@ int main(void) {
     RUN(test_init_refuses_second_can_t_for_same_hcan);
     RUN(test_error_hook_names);
     RUN(test_byte_helpers_accept_null);
+    RUN(test_init_sets_tx_fifo_priority);
+    RUN(test_init_works_when_already_started);
+    RUN(test_listen_before_init_is_rejected);
     return TEST_RESULT();
 }

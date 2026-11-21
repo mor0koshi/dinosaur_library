@@ -11,6 +11,7 @@
  *
  * CubeMX の準備: タイマーを Encoder Mode (TI1 and TI2)、Prescaler 0、Period を最大
  * (16bit なら 65535、TIM2 / TIM5 なら 0xFFFFFFFF) にする。割り込みは要らない。
+ * HAL_TIM_Encoder_Start は encoder_init がやる (自分で先に呼んでいても、エンコーダーとして動いていればそのまま使う)。
  *
  * 遅い回転を 1ms 周期で測ると粗い (2048 カウントなら 1 カウント ≒ 29rpm)。その場合は 10ms 周期くらいにする。
  * encoder_update と値の読み出しは同じ場所 (メインループ同士、または割り込み同士) で行うこと。
@@ -41,6 +42,7 @@ typedef struct encoder {
     float rpm;
 } encoder_t;
 
+/* カウントを始め、今の位置を 0 にする */
 lib_status_t encoder_init(encoder_t *e, TIM_HandleTypeDef *htim, int32_t counts_per_rev);
 /* 向きを逆にする (これから先の変化量の符号が変わる) */
 void encoder_set_reverse(encoder_t *e, bool reverse);

@@ -83,14 +83,23 @@ lib_status_t sbus_init(sbus_t *s, UART_HandleTypeDef *huart) {
     }
     memset(s, 0, sizeof *s);
     s->huart = huart;
-    s->stick_min = 368;
-    s->stick_center = 1024;
-    s->stick_max = 1680;
-    s->deadband = 26;
+    for (int i = 0; i < SBUS_CHANNELS; i++) {
+        s->stick_min[i] = 368;
+        s->stick_center[i] = 1024;
+        s->stick_max[i] = 1680;
+        s->deadband[i] = 26;
+    }
     bool registered = register_port(s);
     port_irq_restore(pm);
     if (!registered) {
         return port_fail(LIB_ERR_FULL, "sbus_init");
+    }
+    /*
+     * 講習 04 のコードで自分の受信 (自分のバッファへの ReceiveToIdle_DMA など) を始めていると、
+     * ここでの受信開始が失敗し、データは自分のバッファに入り続ける。いったん止めてから始める
+     */
+    if (huart->RxState == HAL_UART_STATE_BUSY_RX) {
+        (void)HAL_UART_AbortReceive(huart);
     }
 #if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)
     /* memset で汚れたキャッシュの行が、あとで DMA の書いた値を上書きしないように、受信の前に書き戻して捨てる */
@@ -152,8 +161,9 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
             break;
         }
     }
-    /* 受信をかけ直せないと、それ以降ずっと受信が止まるので知らせる */
+    /* 受信をかけ直せないと、それ以降ずっと受信が止まるので知らせる (sbus_update でもう一度かけ直す) */
     if (start_rx(s) != HAL_OK) {
+        s->rx_restart_needed = true;
         lib_error_hook(LIB_ERR_HAL, "HAL_UARTEx_RxEventCallback");
     }
 }
@@ -170,8 +180,9 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
         return;
     }
     s->error_count++;
-    /* 受信をかけ直せないと、それ以降ずっと受信が止まるので知らせる */
+    /* 受信をかけ直せないと、それ以降ずっと受信が止まるので知らせる (sbus_update でもう一度かけ直す) */
     if (start_rx(s) != HAL_OK) {
+        s->rx_restart_needed = true;
         lib_error_hook(LIB_ERR_HAL, "HAL_UART_ErrorCallback");
     }
 }
@@ -191,6 +202,13 @@ void sbus_update(sbus_t *s) {
     }
     /* 途中で受信割り込みが入って別のフレームの値が混ざらないよう、まとめて写す */
     uint32_t pm = port_irq_save();
+    /*
+     * 割り込みの中で受信のかけ直しに失敗していたら、ここでもう一度かける (リセットするまで受信が止まったままにしない)。
+     * 失敗はすでに lib_error_hook で知らせてあるので、ここでは何度失敗しても知らせない (毎周期呼ばれるため)
+     */
+    if (s->rx_restart_needed && start_rx(s) == HAL_OK) {
+        s->rx_restart_needed = false;
+    }
     for (int i = 0; i < SBUS_CHANNELS; i++) {
         s->ch[i] = s->isr_ch[i];
     }
@@ -211,12 +229,13 @@ int sbus_stick(const sbus_t *s, int ch) {
     if (s == NULL || !valid_ch(ch) || !s->ok) {
         return 0;
     }
-    int d = (int)s->ch[ch] - s->stick_center;
-    if (d >= -s->deadband && d <= s->deadband) {
+    int center = s->stick_center[ch];
+    int d = (int)s->ch[ch] - center;
+    if (d >= -s->deadband[ch] && d <= s->deadband[ch]) {
         return 0;
     }
     /* 中立の上下で別々に変換する (上下で幅が違う送信機でも、中立が 0 になるように) */
-    int span = d > 0 ? s->stick_max - s->stick_center : s->stick_center - s->stick_min;
+    int span = d > 0 ? s->stick_max[ch] - center : center - s->stick_min[ch];
     long v = (long)d * 1000L / span;
     if (v > 1000L) {
         v = 1000L;
@@ -231,10 +250,10 @@ int sbus_switch3(const sbus_t *s, int ch) {
         return 0;
     }
     int raw = s->ch[ch];
-    if (raw > (s->stick_center + s->stick_max) / 2) {
+    if (raw > (s->stick_center[ch] + s->stick_max[ch]) / 2) {
         return 1;
     }
-    if (raw < (s->stick_min + s->stick_center) / 2) {
+    if (raw < (s->stick_min[ch] + s->stick_center[ch]) / 2) {
         return -1;
     }
     return 0;
@@ -244,7 +263,7 @@ int sbus_switch2(const sbus_t *s, int ch) {
     if (s == NULL || !valid_ch(ch) || !s->ok) {
         return 0;
     }
-    return s->ch[ch] > s->stick_center ? 1 : 0;
+    return s->ch[ch] > s->stick_center[ch] ? 1 : 0;
 }
 
 int sbus_raw(const sbus_t *s, int ch) {
@@ -254,22 +273,55 @@ int sbus_raw(const sbus_t *s, int ch) {
     return s->ch[ch];
 }
 
+#define SBUS_RAW_MAX 2047 /* 11bit */
+
+/* 0 <= 最小 < 中立 < 最大 <= 2047 か */
+static bool valid_range(int min, int center, int max) {
+    return min >= 0 && min < center && center < max && max <= SBUS_RAW_MAX;
+}
+
+static bool valid_deadband(int deadband) { return deadband >= 0 && deadband <= SBUS_RAW_MAX; }
+
+static void put_range(sbus_t *s, int ch, int min, int center, int max) {
+    s->stick_min[ch] = (int16_t)min;
+    s->stick_center[ch] = (int16_t)center;
+    s->stick_max[ch] = (int16_t)max;
+}
+
 void sbus_set_stick_range(sbus_t *s, int min, int center, int max) {
-    if (s == NULL || !(min < center && center < max)) {
+    if (s == NULL || !valid_range(min, center, max)) {
         lib_error_hook(LIB_ERR_PARAM, "sbus_set_stick_range");
         return;
     }
-    s->stick_min = min;
-    s->stick_center = center;
-    s->stick_max = max;
+    for (int i = 0; i < SBUS_CHANNELS; i++) {
+        put_range(s, i, min, center, max);
+    }
 }
 
 void sbus_set_deadband(sbus_t *s, int deadband) {
-    if (s == NULL || deadband < 0) {
+    if (s == NULL || !valid_deadband(deadband)) {
         lib_error_hook(LIB_ERR_PARAM, "sbus_set_deadband");
         return;
     }
-    s->deadband = deadband;
+    for (int i = 0; i < SBUS_CHANNELS; i++) {
+        s->deadband[i] = (int16_t)deadband;
+    }
+}
+
+void sbus_set_channel_range(sbus_t *s, int ch, int min, int center, int max) {
+    if (s == NULL || !valid_ch(ch) || !valid_range(min, center, max)) {
+        lib_error_hook(LIB_ERR_PARAM, "sbus_set_channel_range");
+        return;
+    }
+    put_range(s, ch, min, center, max);
+}
+
+void sbus_set_channel_deadband(sbus_t *s, int ch, int deadband) {
+    if (s == NULL || !valid_ch(ch) || !valid_deadband(deadband)) {
+        lib_error_hook(LIB_ERR_PARAM, "sbus_set_channel_deadband");
+        return;
+    }
+    s->deadband[ch] = (int16_t)deadband;
 }
 
 uint32_t sbus_frame_count(const sbus_t *s) { return s == NULL ? 0U : s->frame_count; }

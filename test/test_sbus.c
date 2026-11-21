@@ -109,7 +109,9 @@ static void test_sbus2_end_bytes_are_accepted(void) {
 static void test_init_refuses_second_sbus_for_same_huart(void) {
     static sbus_t second;
     CHECK_EQ(sbus_init(&sbus, &huart5), LIB_OK);
+    int aborts = fake.uart_abort_calls;
     CHECK_EQ(sbus_init(&second, &huart5), LIB_ERR_PARAM);
+    CHECK_EQ(fake.uart_abort_calls, aborts); /* 先の sbus の受信は止めない */
     CHECK_EQ(fake.last_error, LIB_ERR_PARAM);
     CHECK_EQ(fake.uart_rx_start_calls, 1); /* 2 回目は受信を始めない */
     /* 先に登録した sbus は壊れていない */
@@ -337,18 +339,146 @@ static void test_other_uart_goes_to_hooks(void) {
 }
 
 static void test_bad_settings_are_rejected(void) {
+    uint16_t ch[16];
+    all_channels(ch, 1024);
+    ch[0] = 1352; /* 初期値の範囲なら 500 */
+    ch[1] = 1050; /* 初期値の不感帯 (26) の内側なので 0 */
     sbus_init(&sbus, &huart5);
-    sbus_set_stick_range(&sbus, 1000, 500, 1600);
+    sbus_set_stick_range(&sbus, 1000, 500, 1600); /* 最小 < 中立 < 最大 になっていない */
     CHECK_EQ(fake.last_error, LIB_ERR_PARAM);
-    CHECK_EQ(sbus.stick_center, 1024); /* 変わっていない */
+    sbus_set_stick_range(&sbus, 368, 1024, 2048); /* SBUS の値 (0〜2047) の外 */
     sbus_set_deadband(&sbus, -1);
-    CHECK_EQ(sbus.deadband, 26);
+    sbus_set_channel_range(&sbus, 16, 368, 1024, 1680); /* ch は 0〜15 */
+    sbus_set_channel_range(&sbus, -1, 368, 1024, 1680);
+    sbus_set_channel_range(&sbus, 0, 1024, 1024, 1680);
+    sbus_set_channel_deadband(&sbus, 1, -1);
+    sbus_set_channel_deadband(&sbus, 16, 10);
+    CHECK_EQ(fake.error_count, 8);
+    receive_frame(ch, 0, 0);
+    sbus_update(&sbus);
+    CHECK_EQ(sbus_stick(&sbus, 0), 500); /* どれも変わっていない */
+    CHECK_EQ(sbus_stick(&sbus, 1), 0);
     CHECK_EQ(sbus_init(NULL, &huart5), LIB_ERR_PARAM);
     sbus_update(NULL);
     CHECK(!sbus_ok(NULL));
     CHECK_EQ(sbus_stick(NULL, 0), 0);
     CHECK_EQ(sbus_raw(NULL, 0), 0);
     CHECK_EQ(sbus_frame_count(NULL), 0);
+    sbus_set_channel_range(NULL, 0, 368, 1024, 1680);
+    sbus_set_channel_deadband(NULL, 0, 10);
+}
+
+/* 壊れかけのプロポ: ch1 だけ中立が 1040 にずれ、端も 400 / 1600 までしか出ない。ch1 だけ直す */
+static void test_channel_range_fixes_one_stick(void) {
+    uint16_t ch[16];
+    all_channels(ch, 1024);
+    sbus_init(&sbus, &huart5);
+    sbus_set_channel_range(&sbus, 1, 400, 1040, 1600);
+
+    ch[0] = 1100;
+    ch[1] = 1100;
+    receive_frame(ch, 0, 0);
+    sbus_update(&sbus);
+    CHECK_EQ(sbus_stick(&sbus, 0), 115); /* ほかの ch は初期値のまま: 76 * 1000 / 656 */
+    CHECK_EQ(sbus_stick(&sbus, 1), 107); /* ch1 は直した値で: 60 * 1000 / 560 */
+
+    ch[1] = 1040;
+    receive_frame(ch, 0, 0);
+    sbus_update(&sbus);
+    CHECK_EQ(sbus_stick(&sbus, 1), 0); /* ずれた中立がちょうど 0 */
+
+    ch[1] = 1600;
+    receive_frame(ch, 0, 0);
+    sbus_update(&sbus);
+    CHECK_EQ(sbus_stick(&sbus, 1), 1000); /* 端まで倒せば ±1000 になる */
+
+    ch[1] = 400;
+    receive_frame(ch, 0, 0);
+    sbus_update(&sbus);
+    CHECK_EQ(sbus_stick(&sbus, 1), -1000);
+}
+
+/* スイッチの境目も、その ch の範囲から決まる */
+static void test_channel_range_moves_switch_thresholds(void) {
+    uint16_t ch[16];
+    all_channels(ch, 1024);
+    ch[0] = 1321;
+    ch[1] = 1321;
+    ch[2] = 719;
+    ch[3] = 1030;
+    sbus_init(&sbus, &huart5);
+    sbus_set_channel_range(&sbus, 1, 400, 1040, 1600); /* 上の境目 1320、下の境目 720 */
+    sbus_set_channel_range(&sbus, 2, 400, 1040, 1600);
+    sbus_set_channel_range(&sbus, 3, 400, 1040, 1600);
+    receive_frame(ch, 0, 0);
+    sbus_update(&sbus);
+    CHECK_EQ(sbus_switch3(&sbus, 0), 0); /* 初期値の境目は 1352 */
+    CHECK_EQ(sbus_switch3(&sbus, 1), 1);
+    CHECK_EQ(sbus_switch3(&sbus, 2), -1);
+    CHECK_EQ(sbus_switch2(&sbus, 3), 0); /* 2 段スイッチの境目は中立 (1040) */
+    CHECK_EQ(sbus_switch2(&sbus, 0), 1);
+}
+
+/* 中立のあたりで値がふらつく ch だけ、不感帯を広げる */
+static void test_channel_deadband(void) {
+    uint16_t ch[16];
+    all_channels(ch, 1074); /* 中立 + 50 */
+    sbus_init(&sbus, &huart5);
+    sbus_set_channel_deadband(&sbus, 3, 60);
+    receive_frame(ch, 0, 0);
+    sbus_update(&sbus);
+    CHECK_EQ(sbus_stick(&sbus, 3), 0);
+    CHECK_EQ(sbus_stick(&sbus, 0), 76); /* ほかの ch は 26 のまま: 50 * 1000 / 656 */
+}
+
+/* 全体の設定 (sbus_set_stick_range / sbus_set_deadband) は全部の ch を上書きする。ch ごとの設定はそのあとに書く */
+static void test_global_settings_overwrite_all_channels(void) {
+    uint16_t ch[16];
+    all_channels(ch, 1100);
+    sbus_init(&sbus, &huart5);
+    sbus_set_channel_range(&sbus, 1, 400, 1040, 1600);
+    sbus_set_channel_deadband(&sbus, 1, 200);
+    sbus_set_stick_range(&sbus, 300, 1100, 1900);
+    sbus_set_deadband(&sbus, 0);
+    ch[0] = 1500;
+    ch[1] = 1500;
+    receive_frame(ch, 0, 0);
+    sbus_update(&sbus);
+    CHECK_EQ(sbus_stick(&sbus, 0), 500); /* 400 * 1000 / 800 */
+    CHECK_EQ(sbus_stick(&sbus, 1), 500);
+}
+
+/* 講習 04 のコードで、自分のバッファに受信を始めていた。止めて、ライブラリのバッファで受信し直す */
+static void test_init_takes_over_running_reception(void) {
+    static uint8_t user_buf[25];
+    static UART_HandleTypeDef h = {.hdmarx = &hdma};
+    static sbus_t s2;
+    HAL_UARTEx_ReceiveToIdle_DMA(&h, user_buf, sizeof user_buf);
+    CHECK_EQ(sbus_init(&s2, &h), LIB_OK);
+    CHECK_EQ(fake.uart_abort_calls, 1);
+    CHECK(fake.uart_rx_buf == s2.rxbuf);
+    CHECK_EQ(h.RxState, HAL_UART_STATE_BUSY_RX);
+}
+
+/* 受信のかけ直しに失敗しても、sbus_update でもう一度かけ直す (リセットするまで受信が止まったままにしない) */
+static void test_update_retries_failed_restart(void) {
+    uint16_t ch[16];
+    all_channels(ch, 1024);
+    sbus_init(&sbus, &huart5);
+    fake.uart_rx_ret = HAL_ERROR;
+    HAL_UART_ErrorCallback(&huart5); /* かけ直しに失敗 */
+    int starts = fake.uart_rx_start_calls;
+    sbus_update(&sbus); /* まだ失敗する */
+    CHECK_EQ(fake.uart_rx_start_calls, starts + 1);
+    fake.uart_rx_ret = HAL_OK;
+    sbus_update(&sbus); /* 今度は成功 */
+    CHECK_EQ(fake.uart_rx_start_calls, starts + 2);
+    sbus_update(&sbus); /* 成功したら、もうかけ直さない */
+    CHECK_EQ(fake.uart_rx_start_calls, starts + 2);
+    receive_frame(ch, 0, 0);
+    sbus_update(&sbus);
+    CHECK(sbus_ok(&sbus));
+    CHECK_EQ(fake.primask, 0);
 }
 
 static void test_restart_failure_is_reported(void) {
@@ -384,6 +514,12 @@ int main(void) {
     RUN(test_error_restarts_rx);
     RUN(test_other_uart_goes_to_hooks);
     RUN(test_restart_failure_is_reported);
+    RUN(test_channel_range_fixes_one_stick);
+    RUN(test_channel_range_moves_switch_thresholds);
+    RUN(test_channel_deadband);
+    RUN(test_global_settings_overwrite_all_channels);
+    RUN(test_init_takes_over_running_reception);
+    RUN(test_update_retries_failed_restart);
     RUN(test_bad_settings_are_rejected);
     return TEST_RESULT();
 }

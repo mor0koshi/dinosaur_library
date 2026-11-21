@@ -47,10 +47,27 @@ HAL_StatusTypeDef HAL_CAN_ConfigFilter(CAN_HandleTypeDef *hcan, const CAN_Filter
     return HAL_OK;
 }
 
+/* 本物と同じく、すでに開始している (LISTENING) と失敗する */
 HAL_StatusTypeDef HAL_CAN_Start(CAN_HandleTypeDef *hcan) {
     fake.can_start_calls++;
+    if (hcan->State == HAL_CAN_STATE_LISTENING) {
+        return HAL_ERROR;
+    }
     fake.can_mcr_at_start = hcan->Instance->MCR;
+    if (fake.can_start_ret == HAL_OK) {
+        hcan->State = HAL_CAN_STATE_LISTENING;
+    }
     return fake.can_start_ret;
+}
+
+/* 本物と同じく、開始していないと失敗する */
+HAL_StatusTypeDef HAL_CAN_Stop(CAN_HandleTypeDef *hcan) {
+    fake.can_stop_calls++;
+    if (hcan->State != HAL_CAN_STATE_LISTENING) {
+        return HAL_ERROR;
+    }
+    hcan->State = HAL_CAN_STATE_READY;
+    return HAL_OK;
 }
 
 HAL_StatusTypeDef HAL_CAN_ActivateNotification(CAN_HandleTypeDef *hcan, uint32_t ActiveITs) {
@@ -101,16 +118,30 @@ HAL_StatusTypeDef HAL_CAN_GetRxMessage(CAN_HandleTypeDef *hcan, uint32_t RxFifo,
 }
 
 HAL_StatusTypeDef HAL_UARTEx_ReceiveToIdle_DMA(UART_HandleTypeDef *huart, uint8_t *pData, uint16_t Size) {
-    (void)huart;
     fake.uart_rx_start_calls++;
     fake.uart_rx_buf = pData;
     fake.uart_rx_size = Size;
+    if (fake.uart_rx_ret == HAL_OK) {
+        huart->RxState = HAL_UART_STATE_BUSY_RX;
+    }
     return fake.uart_rx_ret;
 }
 
+HAL_StatusTypeDef HAL_UART_AbortReceive(UART_HandleTypeDef *huart) {
+    fake.uart_abort_calls++;
+    huart->RxState = HAL_UART_STATE_READY;
+    return HAL_OK;
+}
+
+/* 本物と同じく、すでに開始している (CEN が立っている) と失敗する */
 HAL_StatusTypeDef HAL_TIM_Encoder_Start(TIM_HandleTypeDef *htim, uint32_t Channel) {
-    (void)htim;
     (void)Channel;
     fake.tim_start_calls++;
+    if (htim->Instance->CR1 & TIM_CR1_CEN) {
+        return HAL_ERROR;
+    }
+    if (fake.tim_start_ret == HAL_OK) {
+        htim->Instance->CR1 |= TIM_CR1_CEN;
+    }
     return fake.tim_start_ret;
 }

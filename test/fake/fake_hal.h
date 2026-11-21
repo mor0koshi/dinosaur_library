@@ -22,6 +22,7 @@ typedef struct {
     int can_filter_calls;
     CAN_FilterTypeDef can_last_filter;
     int can_start_calls;
+    int can_stop_calls;
     uint32_t can_mcr_at_start;  /* HAL_CAN_Start が呼ばれた時点の MCR */
     uint32_t can_notifications;
     HAL_StatusTypeDef can_start_ret;
@@ -34,6 +35,7 @@ typedef struct {
 
     /* UART */
     int uart_rx_start_calls;
+    int uart_abort_calls;
     uint8_t *uart_rx_buf;
     uint16_t uart_rx_size;
     HAL_StatusTypeDef uart_rx_ret;

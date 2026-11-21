@@ -170,6 +170,14 @@ lib_status_t can_init(can_t *bus, CAN_HandleTypeDef *hcan) {
         return port_fail(LIB_ERR_FULL, "can_init");
     }
 
+    /*
+     * すでに開始している (同じ can_t でもう一度 init した、講習 08 のコードで HAL_CAN_Start も呼んでいる) と
+     * HAL_CAN_Start が失敗するので、いったん止めてから設定し直す
+     */
+    if (hcan->State == HAL_CAN_STATE_LISTENING && HAL_CAN_Stop(hcan) != HAL_OK) {
+        return port_fail(LIB_ERR_HAL, "can_init");
+    }
+
     /* マスク 0 = 全部受け取る。ID の振り分けはソフトでやる */
     CAN_FilterTypeDef f = {0};
     f.FilterMode = CAN_FILTERMODE_IDMASK;
@@ -191,6 +199,11 @@ lib_status_t can_init(can_t *bus, CAN_HandleTypeDef *hcan) {
     hcan->Instance->MCR |= CAN_MCR_ABOM;
     /* 自動再送をオンにする。オフだと送信に失敗したとき完了の割り込みが来ず、送信の列が止まる */
     hcan->Instance->MCR &= ~CAN_MCR_NART;
+    /*
+     * メールボックスに入れた順に送る。オフだと ID の小さい順 (同じ ID ならメールボックスの番号順) になり、
+     * 同じ ID を続けて送ったとき、新しいフレームが古いフレームを追い越すことがある
+     */
+    hcan->Instance->MCR |= CAN_MCR_TXFP;
 
     if (HAL_CAN_Start(hcan) != HAL_OK) {
         return port_fail(LIB_ERR_HAL, "can_init");
@@ -204,7 +217,8 @@ lib_status_t can_init(can_t *bus, CAN_HandleTypeDef *hcan) {
 /* ---- 受信 ---- */
 
 lib_status_t can_subscribe_range(can_t *bus, uint32_t first, uint32_t last, can_rx_fn fn, void *arg) {
-    if (bus == NULL || fn == NULL || first > last || last > 0x7FFU) {
+    /* hcan が NULL = まだ can_init していない。ここで登録しても can_init で消えるので断る */
+    if (bus == NULL || bus->hcan == NULL || fn == NULL || first > last || last > 0x7FFU) {
         return port_fail(LIB_ERR_PARAM, "can_subscribe_range");
     }
     uint32_t pm = port_irq_save();
@@ -240,7 +254,7 @@ static void box_on_rx(uint32_t id, const uint8_t *data, uint8_t len, void *arg) 
 }
 
 lib_status_t can_listen(can_t *bus, uint32_t id, can_box_t *box) {
-    if (bus == NULL || box == NULL) { /* bus の確認は can_subscribe_range に任せると、報告の名前が変わってしまう */
+    if (bus == NULL || bus->hcan == NULL || box == NULL) { /* bus の確認を can_subscribe_range に任せると、報告の名前が変わってしまう */
         return port_fail(LIB_ERR_PARAM, "can_listen");
     }
     memset(box, 0, sizeof *box);

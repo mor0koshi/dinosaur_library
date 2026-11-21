@@ -12,7 +12,7 @@
  *
  * 使う側に見える値は全部「出力軸」(ギアの先)。ギア比は種類から自動で入る。
  * robomas_update をタイマー割り込みで呼んでも、メインループの robomas_set_* / robomas_stop_all と同時に動いて大丈夫
- * (指令の書き込みと update の計算は、割り込みを止めて行う)。
+ * (指令・調整の書き込みと update の計算は、割り込みを止めて行う)。
  * ゲインは 1ms ごとに robomas_update を呼ぶ前提。M3508 と位置制御の初期ゲインは仮の値なので実機で調整すること。
  * ロボマスは 1 台で 1Mbps の CAN の約 13% を使い、指令のフレームも 1ms ごとに送る (4 台で約 65%、5 台で約 91%)。
  * 1 本の CAN には 4 台くらいまでにする。
@@ -70,12 +70,15 @@ typedef struct robomas_motor {
 } robomas_motor_t;
 
 typedef struct robomas {
-    can_t *bus;
+    can_t *bus; /* NULL = まだ robomas_init していない (または失敗した) */
     robomas_motor_t motors[ROBOMAS_MAX_MOTORS]; /* motors[i] が ESC の ID i+1 */
+    bool updated;            /* robomas_update を一度でも計算したか */
+    uint32_t last_update_ms; /* 最後に計算した時刻 (1ms に 2 回目以降の update は何もしない) */
 } robomas_t;
 
+/* can_init のあとに呼ぶ (先に呼ぶと LIB_ERR_PARAM) */
 lib_status_t robomas_init(robomas_t *rm, can_t *bus);
-/* モーターを登録する。ID が範囲外 (1〜8 以外) か、登録済みなら NULL */
+/* モーターを登録する。ID が範囲外 (1〜8 以外)・登録済み・robomas_init がまだ (失敗した) なら NULL */
 robomas_motor_t *robomas_add(robomas_t *rm, robomas_type_t type, int id);
 
 /* 指令 (最後に呼んだものが有効。種類を変えると積分をリセットする) */
@@ -83,7 +86,10 @@ void robomas_set_current(robomas_motor_t *m, int16_t current); /* 電流を直�
 void robomas_set_rpm(robomas_motor_t *m, float rpm);           /* 速度制御: 出力軸 rpm */
 void robomas_set_angle(robomas_motor_t *m, float deg);         /* 位置制御: 出力軸の角度 [度] */
 
-/* 全モーターの制御を計算して、使っている ID の範囲の 0x200 / 0x1FF を送る。1ms ごとに呼ぶ */
+/*
+ * 全モーターの制御を計算して、使っている ID の範囲の 0x200 / 0x1FF を送る。1ms ごとに呼ぶ。
+ * 同じ 1ms の間に 2 回目以降を呼んでも何もしない (LIB_OK)。while (1) で待たずに呼んでも、CAN を指令で埋めない
+ */
 lib_status_t robomas_update(robomas_t *rm);
 /* 全モーターを電流指令 0 にして積分をリセットする (送るのは次の robomas_update)。SBUS が NG のときに呼ぶ */
 void robomas_stop_all(robomas_t *rm);

@@ -14,6 +14,7 @@
  * RX の DMA (Normal。Circular は不可) と UART の割り込みをオンにする。F7 は「RX 反転」もオン。
  * F4 の UART には反転の機能がないので、基板にインバーターが要る。
  * sbus_init は 1 つの UART につき 1 回 (別の sbus_t で同じ UART を初期化すると LIB_ERR_PARAM)。
+ * その UART で自分の受信 (HAL_UARTEx_ReceiveToIdle_DMA など) をすでに始めていたら、止めてからライブラリの受信に切り替える。
  *
  * sbus_init を呼ぶと、HAL_UARTEx_RxEventCallback と HAL_UART_ErrorCallback はライブラリが持つ。
  * 他の UART の分は uart_rx_event_hook / uart_error_hook に来るので、必要ならそちらを書く。
@@ -45,19 +46,23 @@ typedef struct sbus {
     volatile bool isr_received;
     volatile uint32_t frame_count;
     volatile uint32_t error_count;
+    volatile bool rx_restart_needed; /* 受信のかけ直しに失敗した (sbus_update でもう一度かける) */
     /* sbus_update が書く (使う側はこちらを読む) */
     uint16_t ch[SBUS_CHANNELS];
     bool ok;
-    /* 調整値 */
-    int stick_min;
-    int stick_center;
-    int stick_max;
-    int deadband;
+    /* 調整値 (チャンネルごと) */
+    int16_t stick_min[SBUS_CHANNELS];
+    int16_t stick_center[SBUS_CHANNELS];
+    int16_t stick_max[SBUS_CHANNELS];
+    int16_t deadband[SBUS_CHANNELS];
 } sbus_t;
 
 lib_status_t sbus_init(sbus_t *s, UART_HandleTypeDef *huart);
 
-/* 最新のフレームを写し取り、正常かどうかを判定する。メインループで毎周期 1 回呼ぶ */
+/*
+ * 最新のフレームを写し取り、正常かどうかを判定する。メインループで毎周期 1 回呼ぶ。
+ * 割り込みの中で受信のかけ直しに失敗していたら、ここでもう一度かけ直す
+ */
 void sbus_update(sbus_t *s);
 
 /*
@@ -76,10 +81,18 @@ int sbus_switch3(const sbus_t *s, int ch);
 /* 生の値 (0〜2047)。sbus_ok が false でも最後の値を返す */
 int sbus_raw(const sbus_t *s, int ch);
 
-/* スティックの最小・中立・最大 (初期値 368 / 1024 / 1680)。スイッチの境目もここから決まる */
+/*
+ * 送信機に合わせる調整。値は sbus_raw で見た生の値 (0〜2047) で書く。
+ * 全部の ch をまとめて決める関数と、1 つの ch だけ決める関数がある。まとめての方は全部の ch を上書きするので、先に呼ぶ。
+ */
+/* 全部の ch のスティックの最小・中立・最大 (初期値 368 / 1024 / 1680)。スイッチの境目もここから決まる */
 void sbus_set_stick_range(sbus_t *s, int min, int center, int max);
-/* 中立からこの幅の内側は 0 (初期値 26) */
+/* 全部の ch の不感帯。中立からこの幅の内側は 0 (初期値 26) */
 void sbus_set_deadband(sbus_t *s, int deadband);
+/* ch だけの最小・中立・最大。プロポが古い・壊れかけで、中立がずれる・端まで出ないスティックを直す */
+void sbus_set_channel_range(sbus_t *s, int ch, int min, int center, int max);
+/* ch だけの不感帯。中立のあたりで値がふらつくスティックだけ広げる */
+void sbus_set_channel_deadband(sbus_t *s, int ch, int deadband);
 
 uint32_t sbus_frame_count(const sbus_t *s); /* 受信したフレームの数 */
 uint32_t sbus_error_count(const sbus_t *s); /* UART エラーの数 */

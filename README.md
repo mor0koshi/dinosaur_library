@@ -20,6 +20,8 @@ int ly = sbus_stick(&sbus, 1);    // スティックの値 (-1000〜+1000)
 | **エンコーダー CAN** | `encoder_can_` | エンコーダーの値を、CAN で別の基板に送る |
 | **ロボマス** | `robomas_` | M3508 / M2006 を、回転数や角度を指定して動かす |
 
+使える関数は全部、このページの下の **[関数の一覧](#関数の一覧)** に、できることといっしょにまとめてあります。
+
 - 使えるマイコン: STM32 の F4 / F7 (F446RE・F767ZI でビルドを確認。実機での確認はこれから)
 - 言語: C (CubeMX で作ったプロジェクトに、そのまま足せます)
 
@@ -213,6 +215,8 @@ int main(void)
 > - `init` を `while (1)` の中に書かないでください。毎回やり直しになって、正しく動きません
 > - `update` を呼び忘れると、値がずっと変わりません
 > - `init` は、CubeMX が作った初期化 (`MX_◯◯_Init()`) より**あと** (`USER CODE BEGIN 2`) に書きます。先に呼ぶと、UART などがまだ準備できていません
+> - 入れ物 (`sbus_t sbus;` など) は、必ず**関数の外** (`USER CODE BEGIN PV`) に書きます。
+>   自分で作った関数の中に書くと、その関数が終わったときに入れ物が消えて、割り込みが消えた場所に書き込んでしまいます
 
 ---
 
@@ -305,6 +309,51 @@ sbus_set_deadband(&sbus, 26);                   // 真ん中から ±26 以内�
 スイッチの境目も、この 3 つの値から自動で決まります (真ん中と端のちょうど中間)。
 スイッチの向き (上が +1 か −1 か) が思っていたのと逆なら、使う側で `-sbus_switch3(&sbus, 4)` のように符号を反対にします。
 
+### プロポの値がずれているとき
+
+長く使ったプロポや、落として壊れかけたプロポは、**スティックごとに**値がずれることがあります。たとえば次のような症状です。
+
+- スティックを離しても `sbus_stick` が 0 にならない (真ん中がずれている)
+- 端まで倒しても ±1000 にならない (端まで値が出ない)
+- 3 段スイッチの真ん中や端が、正しく読めない
+
+そのときは、**ずれているチャンネルだけ** 値を直せます。手順は次のとおりです。
+
+**① 生の値を見る。** 直したいチャンネル (ここでは CH2 = 番号 `1`) の `sbus_raw` を表示します。
+
+```c
+sbus_update(&sbus);
+printf("raw=%4d\r\n", sbus_raw(&sbus, 1));
+HAL_Delay(100);
+```
+
+**② 3 つの値をメモする。** スティックを離したとき (真ん中) と、両側の端まで倒したときの値を読みます。
+端の 2 つは、小さい方が「最小」、大きい方が「最大」です。たとえば「真ん中 1040、最小 400、最大 1600」だったとします。
+
+**③ `sbus_init` のすぐあとに書く。**
+
+```c
+sbus_init(&sbus, &huart5);
+sbus_set_channel_range(&sbus, 1, 410, 1040, 1590);   // CH2 だけ：いちばん小さい値・真ん中・いちばん大きい値
+sbus_set_channel_deadband(&sbus, 1, 40);             // CH2 だけ：真ん中から ±40 以内は 0 (真ん中がふらつくとき)
+```
+
+これで CH2 は、離すと 0、端まで倒すと ±1000 になります。ほかのチャンネルは今までどおりです。
+その CH の 3 段スイッチ・2 段スイッチの境目も、書いた 3 つの値から決まります。
+
+| 関数 | 直すもの |
+|---|---|
+| `sbus_set_channel_range(&sbus, ch, 最小, 真ん中, 最大)` | そのチャンネルだけの、いちばん小さい値・真ん中・いちばん大きい値 |
+| `sbus_set_channel_deadband(&sbus, ch, 幅)` | そのチャンネルだけの不感帯 (真ん中から ±幅 は 0) |
+
+> [!TIP]
+> - 端の値は、メモした値より **10 くらい内側** (上の例なら 400 → 410、1600 → 1590) を書くと、毎回きちんと ±1000 まで届きます。
+>   書いた値より外側は、±1000 で止まります
+> - 真ん中の値が毎回少し違うときは、何回か離してみて、いちばんよく出る値を真ん中にし、ふらつく幅より少し大きい不感帯にします
+> - 全部のチャンネルをまとめて決める `sbus_set_stick_range` / `sbus_set_deadband` は、チャンネルごとの設定も上書きします。
+>   両方使うときは、**まとめての方を先に**、チャンネルごとの方をあとに書きます
+> - 値は 0〜2047 で、「最小 < 真ん中 < 最大」にします。おかしな値を書くと何も変わらず、`lib_error_hook` に `LIB_ERR_PARAM` が来ます
+
 ### スティックでモーターの速さを決める例
 
 スティックの −1000〜+1000 を、PWM の −255〜+255 に直します (講習 03・05)。
@@ -336,6 +385,7 @@ int v = sbus_stick(&sbus, 1) * 255 / 1000;   // 先に掛けてから割る
 - 「Combined Channels」を「Encoder Mode」にする
 - Parameter Settings の「Encoder Mode」を「Encoder Mode TI1 and TI2」(4 逓倍) にする
 - Prescaler は 0、Counter Period は 65535 (TIM2 / TIM5 なら 4294967295)
+- `HAL_TIM_Encoder_Start` は `encoder_init` がやるので、書かなくてかまいません (講習 07 のコードに残っていても動きます)
 
 ### いちばん簡単な例
 
@@ -396,6 +446,8 @@ while (1)
 - NVIC Settings で **「CAN1 RX0 interrupt」と「CAN1 TX interrupts」の両方**にチェック
   (ライブラリは「送り終わった」という合図を使って、次のデータを送ります)
 - フィルタの設定、`HAL_CAN_Start`、`HAL_CAN_ActivateNotification` は**書きません** (`can_init` が全部やります)
+  - 講習 08 のコードの `HAL_CAN_Start` が残っていても、`can_init` がいったん止めてやり直すので動きます
+  - **フィルタの設定 (`HAL_CAN_ConfigFilter`) は消してください。** 残っていると、ライブラリが受け取れない ID が出ます
 - 1 枚で試すときは Operating Mode を「Loopback」、2 枚でつなぐときは「Normal」
 
 ### いちばん簡単な例 (1 枚の Loopback で、送ったものを自分で受け取る)
@@ -434,7 +486,7 @@ while (1)
 | `can_init(&can1, &hcan1);` | 講習 08 で書いた、フィルタの設定・`HAL_CAN_Start`・受信の割り込みの 10 行の代わり。ケーブルが抜けて CAN が止まっても、自動で復帰する |
 | `can_listen(&can1, 0x001, &box);` | 「ID 0x001 のデータが届いたら、`box` にしまっておいて」と頼む。箱には最新の 1 回分だけ入る |
 | `can_read(&box, r)` | 前に読んだあとに新しく届いていたら、データを `r` に写して true を返す。届いていなければ false |
-| `can_send(&can1, 0x001, d, 8);` | ID 0x001 でデータ `d` を 8 バイト送る。すぐに送れないときは、ライブラリの中で順番待ちをしてから送る |
+| `can_send(&can1, 0x001, d, 8);` | ID 0x001 でデータ `d` を 8 バイト送る。すぐに送れないときは、ライブラリの中で順番待ちをしてから、送った順に送る |
 | `can_put_i16(d, 0, count);` | `count` (2 バイトの整数) を、`d` の 0 バイト目から入れる |
 | `can_get_i16(r, 0)` | `r` の 0 バイト目から、2 バイトの整数を取り出す |
 
@@ -472,7 +524,8 @@ if (can_age_ms(&box) > 100) {      // 最後に届いてから 100ms 以上た�
 
 > [!IMPORTANT]
 > `can_init` は **1 つの CAN につき 1 回だけ**、`can_listen` などより**先に**呼びます。
-> あとから呼ぶと、それまでの `can_listen` の登録が消えます。
+> - `can_init` より先に `can_listen` を呼ぶと、登録されずに `LIB_ERR_PARAM` になります
+> - `can_init` をあとからもう一度呼ぶと、それまでの `can_listen` の登録が消えます
 
 ---
 
@@ -555,10 +608,10 @@ while (1)
 
 | コード | 何をしているか |
 |---|---|
-| `robomas_init(&rm, &can1);` | ESC からの返事 (角度・回転数) を受け取り始める。`can_init` のあとに呼ぶ |
-| `robomas_add(&rm, ROBOMAS_M3508, 1)` | モーターを登録して、その場所を返す。種類は `ROBOMAS_M3508` か `ROBOMAS_M2006`。ID が 1〜8 以外か、同じ ID を 2 回登録すると NULL (失敗) |
+| `robomas_init(&rm, &can1);` | ESC からの返事 (角度・回転数) を受け取り始める。`can_init` のあとに呼ぶ (先に呼ぶと `LIB_ERR_PARAM`) |
+| `robomas_add(&rm, ROBOMAS_M3508, 1)` | モーターを登録して、その場所を返す。種類は `ROBOMAS_M3508` か `ROBOMAS_M2006`。ID が 1〜8 以外・同じ ID を 2 回登録・`robomas_init` より先に呼んだときは NULL (失敗) |
 | `robomas_set_rpm(wheel, 回転数)` | 「この回転数で回って」と指示する。単位は出力軸 (ギアの先) の rpm |
-| `robomas_update(&rm);` | 登録した全部のモーターについて、指示に近づけるための電流を計算して ESC に送る。**1ms ごとに 1 回**呼ぶ |
+| `robomas_update(&rm);` | 登録した全部のモーターについて、指示に近づけるための電流を計算して ESC に送る。**1ms ごとに 1 回**呼ぶ。同じ 1ms のあいだに何回呼んでも、計算して送るのは 1 回だけ |
 | `robomas_stop_all(&rm);` | 全部のモーターを止める (電流 0)。実際に送るのは次の `robomas_update` なので、止めているあいだも update は呼び続ける |
 
 > [!WARNING]
@@ -591,6 +644,8 @@ while (1)
   そのあいだにローター (モーターの中の軸) が半回転より多く回ると、**ローター何回転ぶんでも角度がずれることがあります**。
   そういうことがあったら、`robomas_reset_angle` で原点を取り直してください
 - `robomas_update` は、メインループからでも、タイマー割り込みの中からでも呼べます
+- `robomas_update` を 1ms を待たずに何回も呼んでも、送るのは 1ms に 1 回だけです。
+  毎回送ると、指令のデータが CAN を埋めて ESC からの返事が届かなくなり、全部のモーターが止まってしまうためです
 
 ### ゲイン (効き具合) の調整
 
@@ -636,6 +691,16 @@ void uart_rx_event_hook(UART_HandleTypeDef *huart, uint16_t size) { /* HAL_UARTE
 void uart_error_hook(UART_HandleTypeDef *huart) { /* HAL_UART_ErrorCallback の代わり */ }
 ```
 
+### 講習のコードから乗り換えるとき
+
+講習で自分で書いたコードが残っているときは、次のようにします。
+
+| 講習で書いたもの | ライブラリに乗り換えたら |
+|---|---|
+| `HAL_UARTEx_RxEventCallback`、`HAL_UART_ErrorCallback`、`HAL_CAN_RxFifo0MsgPendingCallback` | **消す** (残すと「multiple definition」のエラー) |
+| CAN のフィルタの設定 (`HAL_CAN_ConfigFilter`) | **消す** (残すと、受け取れない ID が出る) |
+| `HAL_CAN_Start`、`HAL_CAN_ActivateNotification`、`HAL_TIM_Encoder_Start`、`HAL_UARTEx_ReceiveToIdle_DMA` | 消すのがおすすめ。残っていても、`init` が止めてやり直すので動く |
+
 ### 自分の関数に同じ名前を付けない
 
 ライブラリの関数の名前には頭の印がないので、自分の関数に `can_send` や `encoder_init` のような名前を付けると、
@@ -664,9 +729,9 @@ void lib_error_hook(lib_status_t err, const char *where) {   // ライブラリ�
 
 | 番号 | 名前 | 意味 |
 |---|---|---|
-| 1 | `LIB_ERR_PARAM` | 渡した値がおかしい (ID が範囲外、同じ ID を 2 回登録、同じ CAN に `can_t` を 2 つ、など) |
+| 1 | `LIB_ERR_PARAM` | 渡した値がおかしい (ID が範囲外、同じ ID を 2 回登録、同じ CAN に `can_t` を 2 つ、など)。または呼ぶ順番が逆 (`can_init` より先に `can_listen`・`robomas_init`、`robomas_init` より先に `robomas_add`) |
 | 2 | `LIB_ERR_FULL` | 登録の数か、送信の順番待ちがいっぱい (CAN の相手がいなくて送れない、など) |
-| 3 | `LIB_ERR_HAL` | HAL の関数が失敗した (`HAL_CAN_Start` を自分でも呼んでいる、など) |
+| 3 | `LIB_ERR_HAL` | HAL の関数が失敗した (CubeMX の初期化 `MX_◯◯_Init()` より先に `init` を呼んだ、タイマーがエンコーダーモードになっていない、など) |
 | 4 | `LIB_ERR_IRQ_OFF` | CubeMX で必要な割り込みや DMA が設定されていない (DMA が Circular の場合も) |
 
 > [!NOTE]
@@ -681,10 +746,12 @@ void lib_error_hook(lib_status_t err, const char *where) {   // ライブラリ�
 | ビルドで `multiple definition of 'can_send'` など | 自分の関数の名前がライブラリと同じ。自分の方の名前を変える |
 | `dinosaur_library.h` が見つからない／`add_subdirectory` でエラー | CMakeLists.txt の 2 か所を足した？ ライブラリのフォルダはプロジェクトの隣で、名前はちょうど `dinosaur_library`？ (ZIP の「-main」が残っていない？) |
 | `sbus_ok` がずっと 0 | 講習 04 のトラブルの表と同じ確認 (配線・反転・通信設定・NVIC)。DMA が Circular だと `sbus_init` が失敗する |
+| スティックを離しても `sbus_stick` が 0 にならない／端まで倒しても ±1000 にならない | プロポの値がずれている。「[プロポの値がずれているとき](#プロポの値がずれているとき)」の手順で `sbus_set_channel_range` を書く |
 | 値がずっと変わらない | ループで `sbus_update` / `encoder_update` を呼んでいる？ |
 | `can_init` が `LIB_ERR_IRQ_OFF` | NVIC で「CAN1 RX0 interrupt」と「CAN1 TX interrupts」の両方にチェックした？ |
-| CAN で何も受け取れない | `can_listen` より先に `can_init` を呼んだ？ 講習 08 のつまずきポイント (速度・終端抵抗・Normal モード) も確認 |
+| CAN で何も受け取れない | `can_listen` より先に `can_init` を呼んだ？ (逆だと `lib error 1 in can_listen`) 講習 08 のフィルタの設定が残っていない？ 講習 08 のつまずきポイント (速度・終端抵抗・Normal モード) も確認 |
 | `robomas_ok` がずっと false | ESC の ID と `robomas_add` の ID は同じ？ CAN は 1Mbps・Normal？ ESC に電源が入っている？ |
+| `robomas_add` が NULL を返す | `robomas_init` より先に呼んでいない？ (`can_init` → `robomas_init` → `robomas_add` の順) ID は 1〜8？ 同じ ID を 2 回登録していない？ |
 
 「つながっているはずなのに動かない」ときは、次の数を printf で見ると切り分けられます。
 
@@ -715,6 +782,7 @@ void lib_error_hook(lib_status_t err, const char *where) {   // ライブラリ�
 - [ ] **SBUS**：`sbus_raw` の値を表示し、スティックを動かすと変わる
 - [ ] **SBUS**：受信機のコネクタを抜くと、0.2 秒以内に `sbus_ok` が 0 になる
 - [ ] **SBUS**：送信機の電源を切ると `sbus_ok` が 0 になる
+- [ ] **SBUS**：スティックを離すと `sbus_stick` が 0、端まで倒すと ±1000 になる (ならなければ `sbus_set_channel_range` で直す)
 - [ ] **CAN**：2 枚の基板で `can_send` と `can_listen` をして、値が届く。片方の電源を切ると `can_age_ms` が増え続ける
 - [ ] **エンコーダー**：手で 1 回転させると `encoder_turns` がだいたい 1.0 (マイナスなら `encoder_set_reverse`)
 - [ ] **ロボマス**：タイヤを浮かせて、`robomas_set_rpm` に小さい値 (10rpm くらい) を入れると、その速さで回る
@@ -723,25 +791,132 @@ void lib_error_hook(lib_status_t err, const char *where) {   // ライブラリ�
 
 ---
 
-## もっと使いこなす
+## 関数の一覧
 
-慣れてきた人向けの機能です。
+このライブラリを入れると使えるようになる関数の全部です。`include/` の中のファイルにも、同じことがコメントで書いてあります。
+「場所」の列は、`main.c` のどこで呼ぶかの目安です (PV = `USER CODE BEGIN PV`、2 = `USER CODE BEGIN 2`、ループ = `while (1)` の中)。
 
-| 関数 | 説明 |
-|---|---|
-| `can_subscribe(&can1, ID, 関数, NULL)` | その ID が届いた瞬間に、自分の関数を呼んでもらう。割り込みの中で動くので、中身は短く (値を写すだけ) 書く |
-| `can_subscribe_range(&can1, 最初の ID, 最後の ID, 関数, NULL)` | ID の範囲でまとめて受け取る |
-| `can_peek(&box, r)` | 新しく届いたかに関係なく、最後に届いたデータを写す (`can_read` と違って「読んだ」印を付けない) |
-| `encoder_can_count(&wheel)` | 送られてきたカウントの合計 |
-| `robomas_set_gear_ratio(m, ギア比)` | 外付けのギアがあるときなどに、ギア比を変える |
+### 入れ物 (型)
+
+| 型 | 何の入れ物か | 作る数 |
+|---|---|---|
+| `sbus_t` | SBUS 1 つ分 | 受信機 1 つに 1 個 (2 個まで) |
+| `encoder_t` | エンコーダー 1 個分 | エンコーダー 1 個に 1 個 |
+| `can_t` | CAN 1 本分 | CAN 1 本に 1 個 (3 本まで) |
+| `can_box_t` | CAN で届いたデータを 1 つの ID ぶんしまっておく箱 | 受け取る ID ごとに 1 個 |
+| `encoder_can_rx_t` | CAN で届いたエンコーダーの値 | 受け取るエンコーダーごとに 1 個 |
+| `robomas_t` | ロボマス全体 | CAN 1 本に 1 個 |
+| `robomas_motor_t *` | ロボマス 1 台 (`robomas_add` が返す場所を入れる) | モーターごとに 1 個 |
+| `lib_status_t` | 関数の結果。`LIB_OK` (0) なら成功、それ以外は「[何がだめだったかを表示する](#何がだめだったかを表示する)」の表の番号 | — |
+
+### SBUS (`sbus_`)
+
+| 関数 | 場所 | 返すもの | できること |
+|---|---|---|---|
+| `sbus_init(&sbus, &huart5)` | 2 | `lib_status_t` | UART の DMA 受信を始める。受信が止まっても自動で受信し直す |
+| `sbus_update(&sbus)` | ループ | — | 届いた最新の値を写し取り、受信できているかを判定する。値を読む前に毎回呼ぶ |
+| `sbus_ok(&sbus)` | ループ | true / false | 受信できていれば true。まだ届かない・0.2 秒届かない・送信機を見失ったときは false |
+| `sbus_stick(&sbus, ch)` | ループ | −1000〜+1000 | スティックの値。真ん中で 0。`sbus_ok` が false なら 0 |
+| `sbus_switch3(&sbus, ch)` | ループ | −1 / 0 / +1 | 3 段スイッチ。生の値が大きい方が +1。`sbus_ok` が false なら 0 |
+| `sbus_switch2(&sbus, ch)` | ループ | 0 / 1 | 2 段スイッチ。`sbus_ok` が false なら 0 |
+| `sbus_raw(&sbus, ch)` | ループ | 0〜2047 | 生の値。`sbus_ok` が false でも最後に届いた値 |
+| `sbus_set_stick_range(&sbus, 最小, 真ん中, 最大)` | 2 | — | 全部の ch の値の範囲を送信機に合わせる (初期値 368 / 1024 / 1680) |
+| `sbus_set_deadband(&sbus, 幅)` | 2 | — | 全部の ch の不感帯 (初期値 26) |
+| `sbus_set_channel_range(&sbus, ch, 最小, 真ん中, 最大)` | 2 | — | **その ch だけ**範囲を直す (値がずれたプロポ用) |
+| `sbus_set_channel_deadband(&sbus, ch, 幅)` | 2 | — | **その ch だけ**不感帯を変える |
+| `sbus_frame_count(&sbus)` | どこでも | 数 | 受け取ったデータの回数 (うまくいかないときの確認用) |
+| `sbus_error_count(&sbus)` | どこでも | 数 | UART のエラーの回数 (うまくいかないときの確認用) |
+
+`ch` は 0 から数えます (CH1 が `0`)。範囲の外の番号を渡すと 0 を返します。
+
+### エンコーダー (`encoder_`)
+
+| 関数 | 場所 | 返すもの | できること |
+|---|---|---|---|
+| `encoder_init(&enc, &htim4, 1 回転のカウント数)` | 2 | `lib_status_t` | タイマーで数え始め、今の位置を 0 にする。カウント数は PPR × 4 |
+| `encoder_update(&enc)` | ループ (10〜20ms ごと) | — | タイマーを読んで、カウント・回転数を計算する |
+| `encoder_rpm(&enc)` | ループ | 小数 | 回転数 [rpm]。逆回転はマイナス |
+| `encoder_count(&enc)` | ループ | 整数 | 起動 (または `encoder_reset`) からのカウントの合計 |
+| `encoder_delta(&enc)` | ループ | 整数 | 前の `encoder_update` からのカウントの差 |
+| `encoder_turns(&enc)` | ループ | 小数 | 何回転したか (カウントの合計 ÷ 1 回転のカウント数) |
+| `encoder_reset(&enc)` | どこでも | — | カウントの合計を 0 に戻す (原点合わせ) |
+| `encoder_set_reverse(&enc, true)` | 2 | — | 数える向きを逆にする |
+
+### CAN (`can_`)
+
+| 関数 | 場所 | 返すもの | できること |
+|---|---|---|---|
+| `can_init(&can1, &hcan1)` | 2 | `lib_status_t` | フィルタの設定・開始・割り込みまで全部やる。ほかの `can_` より先に呼ぶ |
+| `can_send(&can1, ID, d, バイト数)` | どこでも | `lib_status_t` | ID でデータを送る (0〜8 バイト)。すぐ送れなければ順番待ちして、積んだ順に送る |
+| `can_listen(&can1, ID, &box)` | 2 | `lib_status_t` | その ID が届いたら `box` にしまっておく (最新の 1 回分) |
+| `can_read(&box, r)` | ループ | true / false | 前に読んだあとに新しく届いていれば、`r` (8 バイト) に写して true |
+| `can_peek(&box, r)` | ループ | true / false | 新しいかに関係なく、最後に届いたデータを `r` に写す。一度も届いていなければ false |
+| `can_age_ms(&box)` | ループ | ms | その ID が最後に届いてからの時間。一度も届いていなければとても大きい数 (`UINT32_MAX`) |
+| `can_bus_age_ms(&can1)` | ループ | ms | どの ID でもいいので、最後に何か届いてからの時間 |
+| `can_dropped_count(&can1)` | どこでも | 数 | 送れずに捨てたデータの数 (うまくいかないときの確認用) |
+| `can_subscribe(&can1, ID, 関数, NULL)` | 2 | `lib_status_t` | その ID が届いた瞬間に、自分の関数を呼んでもらう (割り込みの中で動くので短く書く) |
+| `can_subscribe_range(&can1, 最初の ID, 最後の ID, 関数, NULL)` | 2 | `lib_status_t` | ID の範囲でまとめて、届いた瞬間に関数を呼んでもらう |
+
+データの詰め方・取り出し方 (CAN の設定をしていないプロジェクトでも使えます)。`d` は 8 バイトの配列、`位置` は何バイト目から入れるか。
+
+| 詰める | 取り出す | 値の範囲 | 使うバイト数 |
+|---|---|---|---|
+| `can_put_u8(d, 位置, 値)` | `can_get_u8(d, 位置)` | 0〜255 | 1 |
+| `can_put_i8(d, 位置, 値)` | `can_get_i8(d, 位置)` | −128〜127 | 1 |
+| `can_put_u16(d, 位置, 値)` | `can_get_u16(d, 位置)` | 0〜65535 | 2 |
+| `can_put_i16(d, 位置, 値)` | `can_get_i16(d, 位置)` | −32768〜32767 | 2 |
+| `can_put_u32(d, 位置, 値)` | `can_get_u32(d, 位置)` | 0〜約 42 億 | 4 |
+| `can_put_i32(d, 位置, 値)` | `can_get_i32(d, 位置)` | 約 ±21 億 | 4 |
+| `can_put_float(d, 位置, 値)` | `can_get_float(d, 位置)` | 小数 | 4 |
 
 `can_subscribe` で呼んでもらう関数は、次の形で書きます。
 
 ```c
 void on_rx(uint32_t id, const uint8_t *data, uint8_t len, void *arg) {
-  // id：届いた ID、data：データ 8 バイト、len：データの長さ
+  // id：届いた ID、data：データ 8 バイト、len：データの長さ、arg：can_subscribe の最後に渡したもの
 }
 ```
+
+### エンコーダー CAN (`encoder_can_`)
+
+| 関数 | 場所 | 返すもの | できること |
+|---|---|---|---|
+| `encoder_can_send(&can1, ID, &enc)` | ループ (10ms ごと) | `lib_status_t` | エンコーダーのカウントの合計と rpm を、1 回分のデータで送る |
+| `encoder_can_listen(&can1, ID, &wheel)` | 2 | `lib_status_t` | 送られてくるエンコーダーの値を受け取り始める |
+| `encoder_can_rpm(&wheel)` | ループ | 小数 | 送られてきた rpm。まだ届いていなければ 0 |
+| `encoder_can_count(&wheel)` | ループ | 整数 | 送られてきたカウントの合計。まだ届いていなければ 0 |
+| `encoder_can_age_ms(&wheel)` | ループ | ms | 最後に届いてからの時間。一度も届いていなければ `UINT32_MAX` |
+
+### ロボマス (`robomas_`)
+
+| 関数 | 場所 | 返すもの | できること |
+|---|---|---|---|
+| `robomas_init(&rm, &can1)` | 2 | `lib_status_t` | ESC からの返事を受け取り始める。`can_init` のあとに呼ぶ |
+| `robomas_add(&rm, 種類, ESC の ID)` | 2 | モーターの場所 (失敗は NULL) | モーターを登録する。種類は `ROBOMAS_M3508` か `ROBOMAS_M2006`、ID は 1〜8 |
+| `robomas_set_rpm(m, rpm)` | ループ | — | 出力軸の回転数を指定して回す |
+| `robomas_set_angle(m, 角度)` | ループ | — | 出力軸の角度 [度] まで回って止まる |
+| `robomas_set_current(m, 値)` | ループ | — | 電流を直接指定する (M3508 は ±16384、M2006 は ±10000 まで) |
+| `robomas_update(&rm)` | ループ (1ms ごと) | `lib_status_t` | 全部のモーターの電流を計算して送る。同じ 1ms に何回呼んでも送るのは 1 回 |
+| `robomas_stop_all(&rm)` | ループ | — | 全部のモーターを止める (電流 0)。送るのは次の `robomas_update` |
+| `robomas_rpm(m)` | ループ | 小数 | 今の出力軸の回転数 [rpm] |
+| `robomas_angle(m)` | ループ | 小数 | 今の出力軸の角度 [度]。何回転しても数え続ける |
+| `robomas_reset_angle(m)` | どこでも | — | 今の位置を 0 度にする |
+| `robomas_current(m)` | ループ | 整数 | 今の電流 (生の値) |
+| `robomas_temp(m)` | ループ | ℃ | 今の温度 (M3508 だけ。M2006 は 0) |
+| `robomas_ok(m)` | ループ | true / false | ESC からの返事が 100ms 以内に届いていれば true |
+| `robomas_set_speed_gain(m, kp, ki, 積分の上限)` | 2 | — | 速度制御の効き具合を変える |
+| `robomas_set_angle_gain(m, kp, 上限の rpm)` | 2 | — | 角度制御の効き具合と、そのときの最高回転数を変える |
+| `robomas_set_gear_ratio(m, ギア比)` | 2 | — | ギア比を変える (外付けのギアがあるときなど) |
+
+### 自分で書くと呼ばれる関数
+
+同じ名前で `main.c` に書くと、ライブラリが呼んでくれます。書かなければ何もしません。
+
+| 関数 | いつ呼ばれるか |
+|---|---|
+| `void lib_error_hook(lib_status_t err, const char *where)` | ライブラリの関数が失敗したとき。`where` は失敗した関数の名前 |
+| `void uart_rx_event_hook(UART_HandleTypeDef *huart, uint16_t size)` | SBUS 以外の UART で受信したとき (`HAL_UARTEx_RxEventCallback` の代わり) |
+| `void uart_error_hook(UART_HandleTypeDef *huart)` | SBUS 以外の UART でエラーが起きたとき (`HAL_UART_ErrorCallback` の代わり) |
 
 使い方の例は `examples/` フォルダにあります (プロポでロボマスを回す／エンコーダーを CAN で送る／受け取る)。
 

@@ -3,7 +3,7 @@
 
 static CAN_HandleTypeDef hcan1 = {.Instance = CAN1};
 static can_t can1;
-static TIM_TypeDef tim = {.CNT = 0, .ARR = 0xFFFF};
+static TIM_TypeDef tim = {.SMCR = 3, .CNT = 0, .ARR = 0xFFFF};
 static TIM_HandleTypeDef htim = {.Instance = &tim};
 static encoder_t enc;
 static encoder_can_rx_t rx;

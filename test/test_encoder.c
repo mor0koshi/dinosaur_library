@@ -1,8 +1,8 @@
 #include "dinosaur_encoder.h"
 #include "test.h"
 
-static TIM_TypeDef tim16 = {.CNT = 0, .ARR = 0xFFFF};
-static TIM_TypeDef tim32 = {.CNT = 0, .ARR = 0xFFFFFFFF};
+static TIM_TypeDef tim16 = {.SMCR = 3, .CNT = 0, .ARR = 0xFFFF}; /* エンコーダーモード (TI1 and TI2) */
+static TIM_TypeDef tim32 = {.SMCR = 3, .CNT = 0, .ARR = 0xFFFFFFFF};
 static TIM_HandleTypeDef htim16 = {.Instance = &tim16};
 static TIM_HandleTypeDef htim32 = {.Instance = &tim32};
 static encoder_t enc;
@@ -16,8 +16,37 @@ static void test_init(void) {
     CHECK_EQ(encoder_count(&enc), 0); /* 起動時の位置が 0 */
     CHECK_EQ(encoder_init(&enc, &htim16, 0), LIB_ERR_PARAM);
     CHECK_EQ(encoder_init(&enc, NULL, 2048), LIB_ERR_PARAM);
+    tim16.CR1 = 0; /* タイマーが止まっているのに開始に失敗した */
     fake.tim_start_ret = HAL_ERROR;
     CHECK_EQ(encoder_init(&enc, &htim16, 2048), LIB_ERR_HAL);
+    CHECK_EQ(fake.last_error, LIB_ERR_HAL);
+}
+
+/*
+ * 講習 07 のコードで HAL_TIM_Encoder_Start を自分でも呼んでいた (すでに動いている) ときも成功する。
+ * 前は失敗して DWT が動かず、rpm がずっと 0 のままになっていた。
+ */
+static void test_init_works_when_timer_already_started(void) {
+    tim16.CR1 = TIM_CR1_CEN;
+    tim16.CNT = 1000;
+    fake_dwt.CYCCNT = 0;
+    int errors = fake.error_count;
+    CHECK_EQ(encoder_init(&enc, &htim16, 1000), LIB_OK);
+    CHECK_EQ(fake.error_count, errors);
+    CHECK(fake_dwt.CTRL & DWT_CTRL_CYCCNTENA_Msk);
+    tim16.CNT = 1100;          /* 0.1 回転 */
+    fake_dwt.CYCCNT = 1000000; /* 10ms 後 (100MHz) */
+    fake.tick = 10;
+    encoder_update(&enc);
+    CHECK_EQ(encoder_count(&enc), 100); /* 起動前のカウント (1000) は数えない */
+    CHECK_NEAR(encoder_rpm(&enc), 600.0, 0.01);
+}
+
+/* 動いているがエンコーダーモードではない (PWM など) タイマーは、間違いなので断る */
+static void test_init_rejects_running_timer_in_other_mode(void) {
+    static TIM_TypeDef pwm = {.CR1 = TIM_CR1_CEN, .SMCR = 0, .ARR = 999};
+    static TIM_HandleTypeDef hpwm = {.Instance = &pwm};
+    CHECK_EQ(encoder_init(&enc, &hpwm, 1000), LIB_ERR_HAL);
     CHECK_EQ(fake.last_error, LIB_ERR_HAL);
 }
 
@@ -141,6 +170,8 @@ static void test_null_is_safe(void) {
 
 int main(void) {
     RUN(test_init);
+    RUN(test_init_works_when_timer_already_started);
+    RUN(test_init_rejects_running_timer_in_other_mode);
     RUN(test_counts_and_delta);
     RUN(test_count_wraps_without_overflow);
     RUN(test_16bit_wrap);
