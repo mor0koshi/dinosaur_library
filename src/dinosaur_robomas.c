@@ -17,6 +17,9 @@
 #define ROBOMAS_CMD_HIGH 0x1FFU /* ESC の ID 5〜8 への電流指令 */
 #define ROBOMAS_COUNTS_PER_REV 8192
 
+/* 種類ごとの電流の最大 (ESC が受け付ける範囲) */
+static int16_t max_current(robomas_type_t type) { return type == ROBOMAS_M3508 ? 16384 : 10000; }
+
 static float clampf(float v, float lim) {
     if (v > lim) {
         return lim;
@@ -82,19 +85,16 @@ robomas_motor_t *robomas_add(robomas_t *rm, robomas_type_t type, int id) {
     memset(m, 0, sizeof *m);
     m->type = type;
     m->id = (uint8_t)id;
-    if (type == ROBOMAS_M3508) {
-        m->gear = 3591.0f / 187.0f;
-        m->current_limit = 16384;
-    } else {
-        m->gear = 36.0f;
-        m->current_limit = 10000;
-    }
+    m->gear = type == ROBOMAS_M3508 ? 3591.0f / 187.0f : 36.0f;
+    m->current_limit = max_current(type);
     /* M2006 の速度ゲインは AIcontest で確認済みの値。M3508 と位置制御は仮の値 (実機で調整する) */
     m->speed_kp = 1.5f;
     m->speed_ki = 0.08f;
     m->speed_i_limit = 5000.0f;
     m->angle_kp = 2.0f;
     m->angle_max_rpm = 100.0f;
+    m->accel_limit = 0.0f; /* 上限なし */
+    m->ramp_reset = true;
     m->mode = ROBOMAS_MODE_CURRENT;
     m->target = 0.0f;
     m->used = true; /* 設定を書き終えてから使う印を立てる (割り込みが途中の状態を見ないように) */
@@ -102,11 +102,15 @@ robomas_motor_t *robomas_add(robomas_t *rm, robomas_type_t type, int id) {
     return m;
 }
 
-/* 制御の種類が変わったら積分を捨てる (前の種類の積分が残ると、切り替えた瞬間に飛び出す) */
+/*
+ * 制御の種類が変わったら積分を捨てる (前の種類の積分が残ると、切り替えた瞬間に飛び出す)。
+ * 加速度の上限の目標も、今の回転数から始め直す
+ */
 static void set_mode(robomas_motor_t *m, robomas_mode_t mode) {
     if (m->mode != mode) {
         m->mode = mode;
         m->integral = 0.0f;
+        m->ramp_reset = true;
     }
 }
 
@@ -224,6 +228,26 @@ void robomas_set_angle_gain(robomas_motor_t *m, float kp, float max_rpm) {
     port_irq_restore(pm);
 }
 
+void robomas_set_current_limit(robomas_motor_t *m, int16_t limit) {
+    if (m == NULL || limit < 0 || limit > max_current(m->type)) {
+        lib_error_hook(LIB_ERR_PARAM, "robomas_set_current_limit");
+        return;
+    }
+    uint32_t pm = port_irq_save();
+    m->current_limit = limit;
+    port_irq_restore(pm);
+}
+
+void robomas_set_accel_limit(robomas_motor_t *m, float rpm_per_s) {
+    if (m == NULL || !(rpm_per_s >= 0.0f)) {
+        lib_error_hook(LIB_ERR_PARAM, "robomas_set_accel_limit");
+        return;
+    }
+    uint32_t pm = port_irq_save();
+    m->accel_limit = rpm_per_s;
+    port_irq_restore(pm);
+}
+
 /* 速度 PI。目標は出力軸 rpm。ギア比を掛けてローター rpm で計算するので、ギア比を変えてもゲインは同じ */
 static float speed_pi(robomas_motor_t *m, float out_rpm) {
     float err = out_rpm * m->gear - (float)m->fb_rpm;
@@ -231,17 +255,35 @@ static float speed_pi(robomas_motor_t *m, float out_rpm) {
     return m->speed_kp * err + m->speed_ki * m->integral;
 }
 
+/*
+ * 加速度の上限: 速度制御の目標を、1 回の計算 (1ms) ごとに (上限 / 1000) rpm までしか変えない。
+ * 始め直すときは今の回転数から始める (回っている途中で切り替えても、0 rpm に向かって急ブレーキしない)
+ */
+static float ramp(robomas_motor_t *m, float target) {
+    if (m->ramp_reset) {
+        m->ramp_rpm = (float)m->fb_rpm / m->gear;
+        m->ramp_reset = false;
+    }
+    if (m->accel_limit > 0.0f) {
+        m->ramp_rpm += clampf(target - m->ramp_rpm, m->accel_limit * 0.001f);
+    } else {
+        m->ramp_rpm = target;
+    }
+    return m->ramp_rpm;
+}
+
 /* 1 台分の電流指令を計算する。mode・target・integral を読み書きするので、割り込みを止めて呼ぶこと */
 static int16_t compute(robomas_motor_t *m) {
     if (!robomas_ok(m)) {
         /* フィードバックが無いのに積分がたまり続けると、復帰した瞬間に暴れる */
         m->integral = 0.0f;
+        m->ramp_reset = true; /* 戻ってきたら、そのときの回転数から近づけ直す */
         return 0;
     }
     float cmd;
     switch (m->mode) {
     case ROBOMAS_MODE_SPEED:
-        cmd = speed_pi(m, m->target);
+        cmd = speed_pi(m, ramp(m, m->target));
         break;
     case ROBOMAS_MODE_ANGLE:
         /* 角度の差に比例した目標 rpm を作り (上限で頭打ち)、速度制御に渡す */
@@ -321,6 +363,7 @@ void robomas_stop_all(robomas_t *rm) {
             m->mode = ROBOMAS_MODE_CURRENT;
             m->target = 0.0f;
             m->integral = 0.0f;
+            m->ramp_reset = true;
             port_irq_restore(pm);
         }
     }

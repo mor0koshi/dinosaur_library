@@ -49,12 +49,15 @@ typedef struct robomas_motor {
     robomas_type_t type;
     uint8_t id;    /* ESC の ID (1〜8) */
     float gear;    /* ギア比 (ローターの回転数 / 出力軸の回転数) */
-    int16_t current_limit;
+    int16_t current_limit; /* 送る電流の上限 (初期値は種類ごとの最大) */
     float speed_kp;
     float speed_ki;
     float speed_i_limit;
     float angle_kp;
     float angle_max_rpm;
+    float accel_limit; /* 速度制御の目標の変化の上限 [出力軸 rpm/s]。0 = 上限なし */
+    float ramp_rpm;    /* 加速度の上限をかけたあとの、今の目標 [出力軸 rpm] */
+    bool ramp_reset;   /* 次の計算で、ramp_rpm を今の回転数から始め直す */
     robomas_mode_t mode;
     float target;   /* 電流: 生の値 / 速度: 出力軸 rpm / 位置: 出力軸の角度 [度] */
     float integral; /* 速度 PI の積分 (ローター rpm の誤差の和) */
@@ -104,6 +107,17 @@ bool robomas_ok(const robomas_motor_t *m);         /* フィードバックが 1
 void robomas_set_gear_ratio(robomas_motor_t *m, float ratio);
 void robomas_set_speed_gain(robomas_motor_t *m, float kp, float ki, float i_limit);
 void robomas_set_angle_gain(robomas_motor_t *m, float kp, float max_rpm);
+/*
+ * 送る電流の上限 (生の値。M3508 は 0〜16384 = 0〜20A、M2006 は 0〜10000 = 0〜10A)。どの種類の指令にも効く。
+ * 初期値は種類ごとの最大。初めて回すとき・機構を壊したくないときに下げる
+ */
+void robomas_set_current_limit(robomas_motor_t *m, int16_t limit);
+/*
+ * 速度制御 (robomas_set_rpm) の加速度の上限 [出力軸 rpm/s]。目標の rpm に 1ms ごとに (上限 / 1000) rpm ずつ近づける。
+ * 0 で上限なし (初期値)。速度制御に切り替えたときは、今の回転数から近づけ始める。
+ * 位置制御・電流指令・robomas_stop_all には効かない (止めるときはすぐ止める)
+ */
+void robomas_set_accel_limit(robomas_motor_t *m, float rpm_per_s);
 
 #ifdef __cplusplus
 }

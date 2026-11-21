@@ -1,3 +1,5 @@
+#include <string.h>
+
 #include "dinosaur_robomas.h"
 #include "test.h"
 
@@ -23,9 +25,10 @@ static int16_t sent_current(int frame, int esc_id) {
     return (int16_t)((d[slot * 2] << 8) | d[slot * 2 + 1]);
 }
 
-/* 1ms 進めてから robomas_update を呼ぶ (update は 1ms に 1 回だけ計算して送る) */
+/* 1ms 進めてから robomas_update を呼ぶ (update は 1ms に 1 回だけ計算して送る)。前の 1ms に送った分は送り終わったことにする */
 static lib_status_t update_next_ms(void) {
     fake.tick++;
+    fake.can_free_mailboxes = 3;
     return robomas_update(&rm);
 }
 
@@ -294,6 +297,12 @@ static void test_commands_lock_irq(void) {
     before = fake.irq_disable_calls;
     robomas_set_gear_ratio(m, 10.0f);
     CHECK(fake.irq_disable_calls > before);
+    before = fake.irq_disable_calls;
+    robomas_set_current_limit(m, 1000);
+    CHECK(fake.irq_disable_calls > before);
+    before = fake.irq_disable_calls;
+    robomas_set_accel_limit(m, 100.0f);
+    CHECK(fake.irq_disable_calls > before);
     CHECK_EQ(fake.primask, 0);
 }
 
@@ -352,6 +361,151 @@ static void test_init_before_can_init_fails(void) {
     CHECK(robomas_add(&r, ROBOMAS_M3508, 1) == NULL);
 }
 
+/* 電流の上限: どの種類の指令でも、送る電流をこの値で止める (初めて回すとき・機構を壊したくないとき用) */
+static void test_current_limit_clamps_all_modes(void) {
+    setup();
+    robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M3508, 1);
+    feedback(1, 0, 0, 0, 0);
+    robomas_set_current_limit(m, 3000);
+    robomas_set_current(m, 5000);
+    update_next_ms();
+    CHECK_EQ(sent_current(0, 1), 3000);
+    robomas_set_current(m, -5000);
+    update_next_ms();
+    CHECK_EQ(sent_current(1, 1), -3000);
+    robomas_set_rpm(m, 300.0f); /* 速度制御の出力も止める */
+    update_next_ms();
+    CHECK_EQ(sent_current(2, 1), 3000);
+    robomas_set_current_limit(m, 16384); /* 種類の最大までは戻せる */
+    robomas_set_current(m, 5000);
+    update_next_ms();
+    CHECK_EQ(sent_current(3, 1), 5000);
+}
+
+static void test_current_limit_rejects_bad_values(void) {
+    setup();
+    robomas_motor_t *a = robomas_add(&rm, ROBOMAS_M3508, 1);
+    robomas_motor_t *b = robomas_add(&rm, ROBOMAS_M2006, 2);
+    feedback(1, 0, 0, 0, 0);
+    feedback(2, 0, 0, 0, 0);
+    robomas_set_current_limit(a, 2000);
+    robomas_set_current_limit(b, 2000);
+    robomas_set_current_limit(a, 16385); /* M3508 の最大 (16384) より大きい */
+    CHECK_EQ(fake.last_error, LIB_ERR_PARAM);
+    CHECK(strcmp(fake.last_where, "robomas_set_current_limit") == 0);
+    robomas_set_current_limit(b, 10001); /* M2006 の最大 (10000) より大きい */
+    robomas_set_current_limit(a, -1);
+    CHECK_EQ(fake.error_count, 3);
+    robomas_set_current(a, 5000);
+    robomas_set_current(b, 5000);
+    update_next_ms();
+    CHECK_EQ(sent_current(0, 1), 2000); /* どれも変わっていない */
+    CHECK_EQ(sent_current(0, 2), 2000);
+    robomas_set_current_limit(NULL, 100);
+}
+
+/* 加速度の上限: 目標の rpm に、1ms ごとに (上限 / 1000) rpm ずつ近づける */
+static void test_accel_limit_ramps_target(void) {
+    setup();
+    robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
+    robomas_set_gear_ratio(m, 1.0f);
+    robomas_set_speed_gain(m, 1.0f, 0.0f, 5000.0f); /* P だけ。出力 = 目標 - 今の rpm */
+    robomas_set_accel_limit(m, 1000.0f);            /* 1 秒で 1000rpm = 1ms で 1rpm */
+    feedback(1, 0, 0, 0, 0);
+    robomas_set_rpm(m, 3.0f);
+    update_next_ms();
+    CHECK_EQ(sent_current(0, 1), 1);
+    update_next_ms();
+    CHECK_EQ(sent_current(1, 1), 2);
+    update_next_ms();
+    CHECK_EQ(sent_current(2, 1), 3);
+    update_next_ms();
+    CHECK_EQ(sent_current(3, 1), 3); /* 目標に着いたら、そのまま */
+    robomas_set_rpm(m, -3.0f);       /* 逆向きも同じ速さで変わる */
+    update_next_ms();
+    CHECK_EQ(sent_current(4, 1), 2);
+}
+
+/* 回っている途中で速度制御に切り替えたら、今の回転数から近づけ始める (0 rpm に急ブレーキしない) */
+static void test_accel_limit_starts_from_measured_speed(void) {
+    setup();
+    robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
+    robomas_set_gear_ratio(m, 1.0f);
+    robomas_set_speed_gain(m, 1.0f, 0.0f, 5000.0f);
+    robomas_set_accel_limit(m, 1000.0f);
+    feedback(1, 0, 500, 0, 0); /* 500rpm で回っている */
+    robomas_set_current(m, 800);
+    update_next_ms();
+    robomas_set_rpm(m, 600.0f);
+    update_next_ms();
+    CHECK_EQ(sent_current(1, 1), 1); /* 目標は 501rpm (500 + 1)。出力 = 501 - 500 */
+}
+
+/* フィードバックが途絶えて戻ったら、そのときの回転数から近づけ直す */
+static void test_accel_limit_restarts_after_lost_feedback(void) {
+    setup();
+    robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
+    robomas_set_gear_ratio(m, 1.0f);
+    robomas_set_speed_gain(m, 1.0f, 0.0f, 5000.0f);
+    robomas_set_accel_limit(m, 1000.0f);
+    feedback(1, 0, 0, 0, 0);
+    robomas_set_rpm(m, 100.0f);
+    for (int i = 0; i < 50; i++) {
+        update_next_ms(); /* 目標は 50rpm まで上がった */
+    }
+    fake.tick += 200; /* フィードバックが途絶えた */
+    robomas_update(&rm);
+    CHECK_EQ(sent_current(50, 1), 0);
+    feedback(1, 0, 20, 0, 0); /* 20rpm で戻ってきた */
+    update_next_ms();
+    CHECK_EQ(sent_current(51, 1), 1); /* 目標は 21rpm (20 + 1) から */
+}
+
+/* robomas_stop_all は非常停止なので、加速度の上限に関係なくすぐ 0 */
+static void test_stop_all_ignores_accel_limit(void) {
+    setup();
+    robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
+    robomas_set_gear_ratio(m, 1.0f);
+    robomas_set_speed_gain(m, 1.0f, 0.0f, 5000.0f);
+    feedback(1, 0, 0, 0, 0);
+    robomas_set_rpm(m, 300.0f);
+    update_next_ms();
+    CHECK_EQ(sent_current(0, 1), 300);
+    robomas_set_accel_limit(m, 1.0f); /* とてもゆっくり。もし止めるのにも効いたら、300 のまま */
+    robomas_stop_all(&rm);
+    update_next_ms();
+    CHECK_EQ(sent_current(1, 1), 0);
+}
+
+/* 加速度の上限は速度制御 (robomas_set_rpm) だけに効く。位置制御は今までどおり (上限の rpm で頭打ち) */
+static void test_accel_limit_does_not_change_angle_mode(void) {
+    setup();
+    robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
+    robomas_set_gear_ratio(m, 1.0f);
+    robomas_set_speed_gain(m, 1.0f, 0.0f, 5000.0f);
+    robomas_set_angle_gain(m, 2.0f, 100.0f);
+    robomas_set_accel_limit(m, 1000.0f);
+    feedback(1, 0, 0, 0, 0);
+    robomas_set_angle(m, 10.0f);
+    update_next_ms();
+    CHECK_EQ(sent_current(0, 1), 20);
+}
+
+static void test_accel_limit_rejects_bad_values(void) {
+    setup();
+    robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
+    robomas_set_gear_ratio(m, 1.0f);
+    robomas_set_speed_gain(m, 1.0f, 0.0f, 5000.0f);
+    feedback(1, 0, 0, 0, 0);
+    robomas_set_accel_limit(m, -1.0f);
+    CHECK_EQ(fake.last_error, LIB_ERR_PARAM);
+    CHECK(strcmp(fake.last_where, "robomas_set_accel_limit") == 0);
+    robomas_set_accel_limit(NULL, 100.0f);
+    robomas_set_rpm(m, 50.0f);
+    update_next_ms();
+    CHECK_EQ(sent_current(0, 1), 50); /* 初期値は上限なし (すぐ目標) のまま */
+}
+
 static void test_bad_settings_and_null(void) {
     setup();
     robomas_motor_t *m = robomas_add(&rm, ROBOMAS_M2006, 1);
@@ -392,6 +546,14 @@ int main(void) {
     RUN(test_update_runs_at_most_once_per_ms);
     RUN(test_add_before_init_fails);
     RUN(test_init_before_can_init_fails);
+    RUN(test_current_limit_clamps_all_modes);
+    RUN(test_current_limit_rejects_bad_values);
+    RUN(test_accel_limit_ramps_target);
+    RUN(test_accel_limit_starts_from_measured_speed);
+    RUN(test_accel_limit_restarts_after_lost_feedback);
+    RUN(test_stop_all_ignores_accel_limit);
+    RUN(test_accel_limit_does_not_change_angle_mode);
+    RUN(test_accel_limit_rejects_bad_values);
     RUN(test_bad_settings_and_null);
     return TEST_RESULT();
 }
